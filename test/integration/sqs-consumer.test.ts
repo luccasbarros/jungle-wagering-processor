@@ -40,6 +40,7 @@ async function counter(name: string, labels: Record<string, string> = {}): Promi
 }
 
 const inboxDuplicates = () => counter('duplicates_detected_total', { detector: 'inbox' });
+const keyDuplicates = () => counter('duplicates_detected_total', { detector: 'idempotency_key' });
 const redeliveryRetries = () => counter('retries_total', { kind: 'message_redelivery' });
 const deadLettered = () => counter('dlq_messages_total');
 const decided = (status: string) => counter('wager_transactions_total', { status });
@@ -100,6 +101,8 @@ describe('SQS consumer of wager-transactions.fifo', () => {
     expect(await debitsOf(wallet.id)).toBe(1);
     expect(await inboxRowsFor(message.messageId as string)).toBe(1);
     expect(await inboxDuplicates()).toBe(1);
+    // The inbox is what stopped the redelivery; the idempotency key never gets to answer, so it must not count too.
+    expect(await keyDuplicates()).toBe(0);
     expect(await decided('PROCESSED')).toBe(1);
   }, TEST_TIMEOUT_MS);
 
@@ -117,7 +120,7 @@ describe('SQS consumer of wager-transactions.fifo', () => {
     expect(await debitsOf(wallet.id)).toBe(1);
     expect(await inboxRowsFor(first.messageId as string)).toBe(1);
     expect(await inboxRowsFor(second.messageId as string)).toBe(1);
-    expect(await counter('duplicates_detected_total', { detector: 'idempotency_key' })).toBe(1);
+    expect(await keyDuplicates()).toBe(1);
     expect(await inboxDuplicates()).toBe(0);
   }, TEST_TIMEOUT_MS);
 

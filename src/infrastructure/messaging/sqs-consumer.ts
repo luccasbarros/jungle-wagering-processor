@@ -147,14 +147,13 @@ export class SqsConsumer {
     try {
       const { transaction, idempotentReplay } = await this.submit.execute(command, inbox);
       if (idempotentReplay) {
-        // The use case answered from the stored transaction without a write; the inbox still has to know this messageId.
-        if (!(await this.recordInbox(inbox))) return this.duplicate();
         this.logger.log(`message replayed transaction ${transaction.id}`);
         return 'replayed';
       }
       this.logger.log(`message committed transaction ${transaction.id} as ${transaction.status}`);
       return 'committed';
     } catch (error) {
+      // Thrown by the use case on both paths (inside the effect's transaction, or alone on a replay): the inbox already knew this messageId.
       if (error instanceof DuplicateInboxMessageError) return this.duplicate();
       if (error instanceof DomainError && error.code === FailureCode.IdempotencyConflict) {
         // Business refusal that never persists a row: terminal for the queue, so the message is consumed and remembered.

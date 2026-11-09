@@ -102,7 +102,7 @@ const EVENT_FOR_STATUS = `CASE t.status
   WHEN 'PENDING_REFERENCE' THEN 'WagerTransactionPendingReference' END`;
 
 /** Balance equals the ledger sum; version is 1 + non-OPENING movements; one outbox event per ledger entry and per decided transaction. */
-export async function expectMoneyInvariants(db: TestDatabase): Promise<void> {
+export async function expectMoneyInvariants(db: Pick<TestDatabase, 'sql'>): Promise<void> {
   const drift = await db.sql`
     SELECT w.id, w.balance::text AS balance, COALESCE(l.total, 0)::text AS ledger_total, w.version, COALESCE(l.movements, 0)::int AS movements
     FROM wallets w

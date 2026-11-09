@@ -6,6 +6,7 @@
   "scripts": {
     "start": "bun run src/main.ts",
     "test": "bun test",
+    "test:e2e": "docker compose up -d --build --wait --scale app=3 && bun test ./test/e2e/multi-instance.e2e.ts",
     "typecheck": "tsc --noEmit",
     "spike:orm": "bun run spike/orm-spike.ts",
     "migrate": "bun run src/infrastructure/persistence/migrate.ts",

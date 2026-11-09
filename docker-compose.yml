@@ -1,3 +1,12 @@
+# Fixed project name: every checkout (main, worktrees) shares one stack instead of fighting over ports 5432/4566/3000.
+name: jungle-wagering-processor
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql://wagering:wagering@postgres:5432/wagering
+  SQS_ENDPOINT: http://localstack:4566
+  SQS_INPUT_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+  WAGER_EVENTS_QUEUE_URL: http://localstack:4566/000000000000/wager-events.fifo
+
 services:
   postgres:
     image: postgres:17.11
@@ -28,3 +37,41 @@ services:
       interval: 2s
       timeout: 3s
       retries: 60
+
+  # One-shot: the schema moves once per deploy, before any replica boots (three replicas racing on DDL is the failure this avoids).
+  migrate:
+    build: .
+    command: ["bun", "run", "migrate"]
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Each replica serves HTTP and runs the SQS consumer, the outbox publisher and the pending-reference worker.
+  app:
+    build: .
+    environment: *app-env
+    deploy:
+      replicas: 3
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      localstack:
+        condition: service_healthy
+    # SIGTERM: the consumer finishes its 20 s long poll and the message in flight (lock_timeout 3 s) before the ORM closes.
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health/ready"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  nginx:
+    image: nginx:1.29.5-alpine
+    ports:
+      - "3000:80"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      app:
+        condition: service_healthy

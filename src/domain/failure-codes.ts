@@ -15,6 +15,9 @@ export enum FailureCode {
   MissingIdempotencyKey = 'MISSING_IDEMPOTENCY_KEY',
   KindNotSubmittable = 'KIND_NOT_SUBMITTABLE',
   IdempotencyConflict = 'IDEMPOTENCY_CONFLICT',
+  WalletNotFound = 'WALLET_NOT_FOUND',
+  WalletAlreadyExists = 'WALLET_ALREADY_EXISTS',
+  TransactionNotFound = 'TRANSACTION_NOT_FOUND',
   TransientFailure = 'TRANSIENT_FAILURE',
   PermanentFailure = 'PERMANENT_FAILURE',
 }

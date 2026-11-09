@@ -3,6 +3,7 @@ import type { MikroORM } from '@mikro-orm/postgresql';
 import { createOrm, databaseUrl } from '../../../src/infrastructure/persistence/orm.ts';
 
 export interface TestDatabase {
+  url: string;
   sql: SQL;
   orm: MikroORM;
   drop(): Promise<void>;
@@ -22,6 +23,7 @@ export async function createTestDatabase(name: string): Promise<TestDatabase> {
   const sql = new SQL(url.toString());
 
   return {
+    url: url.toString(),
     sql,
     orm,
     async drop() {

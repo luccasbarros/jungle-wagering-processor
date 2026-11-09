@@ -7,7 +7,9 @@
     "start": "bun run src/main.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "spike:orm": "bun run spike/orm-spike.ts"
+    "spike:orm": "bun run spike/orm-spike.ts",
+    "migrate": "bun run src/infrastructure/persistence/migrate.ts",
+    "migrate:down": "bun run src/infrastructure/persistence/migrate.ts down"
   },
   "dependencies": {
     "@mikro-orm/core": "7.2.6",

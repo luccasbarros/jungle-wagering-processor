@@ -24,3 +24,21 @@ jobs:
       - name: Container logs on failure
         if: failure()
         run: docker compose logs --no-color
+
+  e2e:
+    name: e2e (3 replicas behind nginx, SIGKILL and graceful restart)
+    runs-on: ubuntu-24.04
+    needs: test
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.12
+      - name: Install dependencies (lockfile only, no lifecycle scripts)
+        run: bun install --frozen-lockfile
+      # Builds the image, starts migrate + 3 app replicas + nginx with --wait, then runs the suite against localhost:3000.
+      - run: bun run test:e2e
+      - name: Container logs on failure
+        if: failure()
+        run: docker compose logs --no-color

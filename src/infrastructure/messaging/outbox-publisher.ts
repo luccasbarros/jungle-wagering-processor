@@ -3,6 +3,7 @@ import { SQSClient } from '@aws-sdk/client-sqs';
 import { Clock } from '../../application/ports/clock.ts';
 import { EventPublisher } from '../../application/ports/event-publisher.ts';
 import { UnitOfWork } from '../../application/ports/unit-of-work.ts';
+import { Metrics } from '../../application/ports/metrics.ts';
 import { OUTBOX_BATCH_SIZE, PublishOutbox } from '../../application/use-cases/publish-outbox.ts';
 import { SqsEventPublisher } from './sqs-event-publisher.ts';
 import { createSqsClient, wagerEventsQueueUrl } from './sqs.ts';
@@ -63,8 +64,8 @@ export const OUTBOX_PROVIDERS: Provider[] = [
   { provide: EventPublisher, useFactory: (sqs: SQSClient) => new SqsEventPublisher(sqs, wagerEventsQueueUrl()), inject: [SQSClient] },
   {
     provide: PublishOutbox,
-    useFactory: (uow: UnitOfWork, publisher: EventPublisher, clock: Clock) => new PublishOutbox(uow, publisher, clock),
-    inject: [UnitOfWork, EventPublisher, Clock],
+    useFactory: (uow: UnitOfWork, publisher: EventPublisher, clock: Clock, metrics: Metrics) => new PublishOutbox(uow, publisher, clock, metrics),
+    inject: [UnitOfWork, EventPublisher, Clock, Metrics],
   },
   { provide: OutboxPublisherLoop, useFactory: (publishOutbox: PublishOutbox) => new OutboxPublisherLoop(publishOutbox), inject: [PublishOutbox] },
 ];

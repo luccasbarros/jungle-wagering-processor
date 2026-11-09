@@ -8,6 +8,7 @@ import { RequestLoggingMiddleware } from '../../interface/http/request-logging.m
 import { createLogger, NestPinoLogger } from './logger.ts';
 import { PrometheusMetrics } from './prometheus-metrics.ts';
 import { DependencyProbes } from './dependency-probes.ts';
+import { sqsEndpoint } from '../messaging/sqs.ts';
 
 const INPUT_QUEUE_NAME = 'wager-transactions.fifo';
 const DEAD_LETTER_QUEUE_NAME = 'wager-transactions-dlq.fifo';
@@ -27,11 +28,10 @@ const appOrm = (refs: ModuleRef) => (): MikroORM => refs.get<MikroORM, MikroORM>
 @Module({})
 export class ObservabilityModule implements NestModule {
   static register(config: ObservabilityConfig = {}): DynamicModule {
-    const endpoint = config.sqsEndpoint ?? process.env.AWS_ENDPOINT_URL ?? 'http://localhost:4566';
+    const endpoint = config.sqsEndpoint ?? sqsEndpoint();
     const queueUrl = (name: string) => `${endpoint}/${LOCALSTACK_ACCOUNT_ID}/${name}`;
     const target = {
       endpoint,
-      region: process.env.AWS_REGION ?? 'us-east-1',
       inputQueueUrl: config.inputQueueUrl ?? process.env.SQS_INPUT_QUEUE_URL ?? queueUrl(INPUT_QUEUE_NAME),
       deadLetterQueueUrl: config.deadLetterQueueUrl ?? process.env.SQS_DLQ_URL ?? queueUrl(DEAD_LETTER_QUEUE_NAME),
     };

@@ -1,5 +1,6 @@
-import { GetQueueAttributesCommand, SQSClient } from '@aws-sdk/client-sqs';
+import { GetQueueAttributesCommand, type SQSClient } from '@aws-sdk/client-sqs';
 import type { MikroORM } from '@mikro-orm/postgresql';
+import { createSqsClient } from '../messaging/sqs.ts';
 
 // A probe that hangs is a failed probe; orchestrators time out readiness checks within a few seconds.
 const CHECK_TIMEOUT_MS = 2000;
@@ -16,7 +17,6 @@ export interface ReadinessReport {
 
 export interface SqsTarget {
   endpoint: string;
-  region: string;
   inputQueueUrl: string;
   deadLetterQueueUrl: string;
 }
@@ -29,12 +29,7 @@ export class DependencyProbes {
     private readonly orm: () => MikroORM,
     private readonly target: SqsTarget,
   ) {
-    this.sqs = new SQSClient({
-      endpoint: target.endpoint,
-      region: target.region,
-      maxAttempts: 1,
-      ...(process.env.AWS_ACCESS_KEY_ID ? {} : { credentials: { accessKeyId: 'test', secretAccessKey: 'test' } }),
-    });
+    this.sqs = createSqsClient(target.endpoint);
   }
 
   async readiness(): Promise<ReadinessReport> {

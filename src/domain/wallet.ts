@@ -2,7 +2,6 @@ import { Money } from './money.ts';
 import { LedgerDirection, WalletLedgerEntry } from './wallet-ledger-entry.ts';
 import { WagerTransaction } from './wager-transaction.ts';
 import {
-  CurrencyMismatchError,
   InsufficientFundsError,
   InvalidMoneyError,
   InvariantViolationError,
@@ -107,9 +106,8 @@ export class Wallet {
     return this.move(LedgerDirection.Credit, money, ref);
   }
 
-  // The entry is built (and validated) before any field changes, so a refused movement leaves no trace.
+  // Currency is enforced by Money's own arithmetic; the entry is validated before any field changes.
   private move(direction: LedgerDirection, money: Money, ref: MovementRef): WalletLedgerEntry {
-    this.assertSameCurrency(money);
     if (!money.isPositive()) throw new InvariantViolationError('movement amount must be positive');
     const after = direction === LedgerDirection.Debit ? this._balance.subtract(money) : this._balance.add(money);
     if (after.isNegative()) throw new InsufficientFundsError();
@@ -128,9 +126,5 @@ export class Wallet {
     this._version += 1;
     this._updatedAt = ref.at;
     return entry;
-  }
-
-  private assertSameCurrency(money: Money): void {
-    if (money.currency !== this.currency) throw new CurrencyMismatchError(this.currency, money.currency);
   }
 }

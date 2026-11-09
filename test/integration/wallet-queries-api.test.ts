@@ -82,7 +82,10 @@ describe('GET /wallets/:walletId/ledger', () => {
   // Newest first is where offset pagination breaks: every insert at the head shifts the next offset page onto rows already returned.
   it('walks 120 entries in pages of 50 while bets keep committing, returning every entry that existed exactly once', async () => {
     const wallet = await api.wallet('1000.00');
-    await Promise.all(Array.from({ length: 119 }, () => bet(wallet, '1.00')));
+    // Batches keep the hot-wallet queue short of the 3s lock_timeout when the shared Postgres is busy.
+    for (let seeded = 0; seeded < 119; seeded += 10) {
+      await Promise.all(Array.from({ length: Math.min(10, 119 - seeded) }, () => bet(wallet, '1.00')));
+    }
 
     const seen: string[] = [];
     let cursor: string | undefined;

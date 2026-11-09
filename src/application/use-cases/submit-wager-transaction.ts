@@ -14,7 +14,9 @@ import {
 import type { Clock } from '../ports/clock.ts';
 import type { IdGenerator } from '../ports/id-generator.ts';
 import type { Repositories, UnitOfWork } from '../ports/unit-of-work.ts';
-import { DuplicateTransactionError, TransientFailureError } from '../errors.ts';
+import type { Metrics } from '../ports/metrics.ts';
+import { logContext } from '../log-context.ts';
+import { DuplicateTransactionError, LockConflictError, TransientFailureError } from '../errors.ts';
 
 export interface SubmitWagerCommand {
   idempotencyKey: string;
@@ -33,10 +35,29 @@ export class SubmitWagerTransaction {
     private readonly uow: UnitOfWork,
     private readonly clock: Clock,
     private readonly ids: IdGenerator,
+    private readonly metrics: Metrics,
   ) {}
 
   /** `inbox` joins the same SQL transaction, so a redelivered message and its effect commit or roll back together. */
   async execute(command: SubmitWagerCommand, inbox?: InboxMessage): Promise<SubmitWagerResult> {
+    const started = performance.now();
+    try {
+      const result = await this.submit(command, inbox);
+      const { transaction, idempotentReplay } = result;
+      logContext.assign({ transactionId: transaction.id, status: transaction.status, failureCode: transaction.failureCode, idempotentReplay });
+      if (idempotentReplay) this.metrics.duplicateDetected('idempotency_key');
+      else this.metrics.transactionDecided(transaction.status);
+      return result;
+    } catch (error) {
+      if (error instanceof LockConflictError) this.metrics.lockConflict(error.reason);
+      throw error;
+    } finally {
+      this.metrics.processingObserved((performance.now() - started) / 1000);
+    }
+  }
+
+  private async submit(command: SubmitWagerCommand, inbox: InboxMessage | undefined): Promise<SubmitWagerResult> {
+    logContext.assign({ walletId: command.payload.walletId, providerId: command.payload.providerId, kind: command.payload.kind });
     const transaction = WagerTransaction.create({
       ...command.payload,
       id: this.ids.next(),

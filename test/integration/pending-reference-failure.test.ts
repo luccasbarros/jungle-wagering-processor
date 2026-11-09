@@ -5,6 +5,7 @@ import { UnitOfWork, type Repositories } from '../../src/application/ports/unit-
 import { ProcessPendingReferences } from '../../src/application/use-cases/process-pending-references.ts';
 import { PENDING_REFERENCE_POLL_INTERVAL_ENV } from '../../src/infrastructure/workers/pending-reference-worker.ts';
 import { DEFAULT_PENDING_REFERENCE_POLICY } from '../../src/domain/wager-transaction.ts';
+import { PrometheusMetrics } from '../../src/infrastructure/observability/prometheus-metrics.ts';
 import { BRL, eventTypesOf, startTestApps, wager, type ApiClient, type TestApps } from './support/test-app.ts';
 
 const MAX_ATTEMPTS = 1;
@@ -36,13 +37,14 @@ class LedgerFaultUnitOfWork extends UnitOfWork {
 let apps: TestApps;
 let api: ApiClient;
 let worker: ProcessPendingReferences;
+const metrics = new PrometheusMetrics({ outboxLagSeconds: async () => 0, deadLetterDepth: async () => 0 });
 
 beforeAll(async () => {
   process.env[PENDING_REFERENCE_POLL_INTERVAL_ENV] = '0';
   apps = await startTestApps('pending_reference_failure');
   api = apps.apis[0]!;
   const uow = new LedgerFaultUnitOfWork(new MikroOrmUnitOfWork(apps.db.orm));
-  worker = new ProcessPendingReferences(uow, new SystemClock(), new UuidV7IdGenerator(), {
+  worker = new ProcessPendingReferences(uow, new SystemClock(), new UuidV7IdGenerator(), metrics, {
     policy: { ...DEFAULT_PENDING_REFERENCE_POLICY, maxAttempts: MAX_ATTEMPTS },
   });
 });
@@ -82,5 +84,9 @@ describe('a pending transaction whose attempt keeps blowing up', () => {
     expect(ledger.count).toBe(0);
     expect((await api.get(`/wallets/${wallet.id}`)).body.balance).toEqual(BRL('90.00'));
     expect(await eventTypesOf(apps.db, id)).toEqual(['WagerTransactionPendingReference']);
+    const exposition = await metrics.registry.metrics();
+    expect(exposition).toContain('retries_total{kind="pending_reference"} 1');
+    expect(exposition).toContain('pending_reference_exhausted_total{status="FAILED"} 1');
+    expect(exposition).toContain('wager_transactions_total{status="FAILED"} 1');
   });
 });

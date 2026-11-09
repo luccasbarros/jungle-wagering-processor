@@ -1,4 +1,5 @@
 import { FailureCode } from '../domain/failure-codes.ts';
+import type { LockConflictReason } from './ports/metrics.ts';
 
 /** Infrastructure hiccup (lock timeout, deadlock, lost connection, concurrent version bump): the same request may succeed later. */
 export class TransientFailureError extends Error {
@@ -7,6 +8,17 @@ export class TransientFailureError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = new.target.name;
+  }
+}
+
+/** Two writers met on the same wallet; still a 503, but counted apart from a database outage. */
+export class LockConflictError extends TransientFailureError {
+  constructor(
+    public readonly reason: LockConflictReason,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
   }
 }
 

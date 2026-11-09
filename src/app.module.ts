@@ -18,9 +18,13 @@ import { createOrm, databaseUrl } from './infrastructure/persistence/orm.ts';
 import { SystemClock, UuidV7IdGenerator } from './infrastructure/system.ts';
 import { pendingReferenceProviders } from './infrastructure/workers/pending-reference-worker.ts';
 import { OUTBOX_PROVIDERS } from './infrastructure/messaging/outbox-publisher.ts';
+import { NestPinoLogger } from './infrastructure/observability/logger.ts';
+import { Metrics } from './application/ports/metrics.ts';
+import { ObservabilityModule, type ObservabilityConfig } from './infrastructure/observability/observability.module.ts';
 
 export interface AppConfig {
   databaseUrl: string;
+  observability?: ObservabilityConfig;
 }
 
 class OrmShutdown {
@@ -43,6 +47,7 @@ export class AppModule {
   static register(config: AppConfig): DynamicModule {
     return {
       module: AppModule,
+      imports: [ObservabilityModule.register(config.observability)],
       controllers: [HealthController, WalletsController, WageringController],
       providers: [
         { provide: MikroORM, useFactory: () => createOrm(config.databaseUrl) },
@@ -50,7 +55,11 @@ export class AppModule {
         { provide: UnitOfWork, useFactory: (orm: MikroORM) => new MikroOrmUnitOfWork(orm), inject: [MikroORM] },
         { provide: Clock, useClass: SystemClock },
         { provide: IdGenerator, useClass: UuidV7IdGenerator },
-        useCase(SubmitWagerTransaction),
+        {
+          provide: SubmitWagerTransaction,
+          useFactory: (uow: UnitOfWork, clock: Clock, ids: IdGenerator, metrics: Metrics) => new SubmitWagerTransaction(uow, clock, ids, metrics),
+          inject: [UnitOfWork, Clock, IdGenerator, Metrics],
+        },
         useCase(CreateWallet),
         { provide: WageringQueries, useFactory: (uow: UnitOfWork) => new WageringQueries(uow), inject: [UnitOfWork] },
         ...pendingReferenceProviders(),
@@ -63,7 +72,8 @@ export class AppModule {
 }
 
 export async function createApp(config: AppConfig = { databaseUrl: databaseUrl() }): Promise<INestApplication> {
-  const app = await NestFactory.create(AppModule.register(config), { logger: ['error', 'warn'] });
+  const app = await NestFactory.create(AppModule.register(config), { bufferLogs: true });
+  app.useLogger(app.get(NestPinoLogger));
   app.enableShutdownHooks();
   return app;
 }

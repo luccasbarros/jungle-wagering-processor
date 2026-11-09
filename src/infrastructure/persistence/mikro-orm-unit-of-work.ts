@@ -10,7 +10,8 @@ import { WagerTransactionKind, WagerTransactionStatus } from '../../domain/wager
 import { FailureCode } from '../../domain/failure-codes.ts';
 import { DomainError } from '../../domain/errors/domain-errors.ts';
 import { UnitOfWork, type Repositories } from '../../application/ports/unit-of-work.ts';
-import { DuplicateInboxMessageError, DuplicateTransactionError, TransientFailureError } from '../../application/errors.ts';
+import { DuplicateInboxMessageError, DuplicateTransactionError, LockConflictError, TransientFailureError } from '../../application/errors.ts';
+import type { LockConflictReason } from '../../application/ports/metrics.ts';
 import {
   InboxSchema,
   LedgerEntrySchema,
@@ -95,7 +96,7 @@ function repositoriesFor(em: EntityManager): Repositories {
           { id: wallet.id, version: expectedVersion },
           { balance: wallet.balance.amount, version: wallet.version, updatedAt: wallet.updatedAt },
         );
-        if (updated !== 1) throw new TransientFailureError(`wallet ${wallet.id} changed concurrently`);
+        if (updated !== 1) throw new LockConflictError('version_conflict', `wallet ${wallet.id} changed concurrently`);
       },
     },
     transactions: {
@@ -164,8 +165,13 @@ function repositoriesFor(em: EntityManager): Repositories {
   };
 }
 
-// lock_not_available, serialization/deadlock, admin/crash shutdown, too many connections; plus the whole connection class 08.
-const TRANSIENT_SQLSTATES = new Set(['55P03', '40001', '40P01', '57P01', '57P02', '57P03', '53300']);
+const LOCK_CONFLICT_BY_SQLSTATE: Record<string, LockConflictReason> = {
+  '55P03': 'lock_timeout',
+  '40001': 'serialization',
+  '40P01': 'deadlock',
+};
+// admin/crash shutdown, too many connections; plus the whole connection class 08.
+const TRANSIENT_SQLSTATES = new Set(['57P01', '57P02', '57P03', '53300']);
 const TRANSIENT_NETWORK_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE']);
 
 async function translated<T>(run: () => Promise<T>): Promise<T> {
@@ -189,6 +195,8 @@ function translate(error: unknown): unknown {
   if (error instanceof ForeignKeyConstraintViolationException && constraint === 'fk_wager_transactions_wallet') {
     return new DomainError(FailureCode.WalletNotFound, 'wallet not found');
   }
+  const lockConflict = code ? LOCK_CONFLICT_BY_SQLSTATE[code] : undefined;
+  if (lockConflict) return new LockConflictError(lockConflict, `wallet contended (${code})`, { cause: error });
   if (code && (TRANSIENT_SQLSTATES.has(code) || code.startsWith('08') || TRANSIENT_NETWORK_CODES.has(code))) {
     return new TransientFailureError(`database unavailable or contended (${code})`, { cause: error });
   }

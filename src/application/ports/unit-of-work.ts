@@ -20,6 +20,10 @@ export interface WagerTransactionRepository {
   findByIdempotencyKey(idempotencyKey: string): Promise<WagerTransaction | undefined>;
   findByExternalId(providerId: string, externalTransactionId: string): Promise<WagerTransaction | undefined>;
   hasProcessedReversal(referenceTransactionId: string): Promise<boolean>;
+  /** Locks and returns one due PENDING_REFERENCE row nobody else holds (SKIP LOCKED); undefined when none is due. */
+  claimDuePendingReference(now: Date): Promise<WagerTransaction | undefined>;
+  /** Locks the row if it is still PENDING_REFERENCE and free; undefined otherwise. */
+  lockPendingReferenceById(id: string): Promise<WagerTransaction | undefined>;
 }
 
 export interface LedgerRepository {

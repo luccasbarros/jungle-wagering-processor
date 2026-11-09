@@ -25,6 +25,7 @@ import {
   transactionToRecord,
   walletToDomain,
   walletToRecord,
+  type WagerTransactionRecord,
   type WalletRecord,
 } from './schemas.ts';
 
@@ -35,6 +36,14 @@ const LOCK_TIMEOUT = '3s';
 const LOCK_WALLET_SQL = 'select * from wallets where id = ? for no key update';
 
 const REVERSAL_KINDS = [WagerTransactionKind.Refund, WagerTransactionKind.Rollback];
+
+// One row per claim: each pending transaction gets its own SQL transaction, so a poison row never holds up the batch.
+// NULL next_retry_at is "never tried" and goes first. SKIP LOCKED is what lets N workers share the queue without waiting.
+const CLAIM_PENDING_REFERENCE_SQL = `select * from wager_transactions
+  where status = '${WagerTransactionStatus.PendingReference}' and (next_retry_at is null or next_retry_at <= ?)
+  order by next_retry_at nulls first, created_at limit 1 for no key update skip locked`;
+const LOCK_PENDING_REFERENCE_SQL = `select * from wager_transactions
+  where id = ? and status = '${WagerTransactionStatus.PendingReference}' for no key update skip locked`;
 
 export class MikroOrmUnitOfWork extends UnitOfWork {
   constructor(private readonly orm: MikroORM) {
@@ -105,6 +114,14 @@ function repositoriesFor(em: EntityManager): Repositories {
           kind: { $in: REVERSAL_KINDS },
         });
         return reversals > 0;
+      },
+      async claimDuePendingReference(now) {
+        const [row] = await em.execute<WagerTransactionRecord[]>(CLAIM_PENDING_REFERENCE_SQL, [now]);
+        return row ? transactionToDomain(em.map(WagerTransactionSchema, row)) : undefined;
+      },
+      async lockPendingReferenceById(id) {
+        const [row] = await em.execute<WagerTransactionRecord[]>(LOCK_PENDING_REFERENCE_SQL, [id]);
+        return row ? transactionToDomain(em.map(WagerTransactionSchema, row)) : undefined;
       },
     },
     ledger: {

@@ -79,7 +79,26 @@ export interface WagerTransactionState extends CreateWagerTransactionProps {
   processedAt?: Date;
   /** Balance seen when the transaction left PENDING; the idempotent replay answers with it. */
   observedBalance?: Money;
+  retryAttempts: number;
+  /** Undefined means "due now" to the pending-reference worker. */
+  nextRetryAt?: Date;
 }
+
+/** Plan 4.6: both limits are configuration, whichever is hit first ends the wait. */
+export interface PendingReferencePolicy {
+  maxAttempts: number;
+  ttlMs: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+}
+
+// 12 attempts with a 5 min cap is ~50 min of active waiting; 24 h is the ceiling for a BET that never shows up.
+export const DEFAULT_PENDING_REFERENCE_POLICY: PendingReferencePolicy = {
+  maxAttempts: 12,
+  ttlMs: 24 * 60 * 60 * 1_000,
+  baseDelayMs: 2_000,
+  maxDelayMs: 5 * 60 * 1_000,
+};
 
 export interface ApplyContext {
   entryId: string;
@@ -130,7 +149,7 @@ export class WagerTransaction {
     }
     if (props.money.isNegative()) throw new InvalidMoneyError('amount must not be negative');
     if (props.kind !== Kind.Loss && props.money.isZero()) throw new InvalidMoneyError(`${props.kind} amount must be positive`);
-    return new WagerTransaction({ ...props, payloadHash: wagerPayloadHash(props), status: Status.Pending });
+    return new WagerTransaction({ ...props, payloadHash: wagerPayloadHash(props), status: Status.Pending, retryAttempts: 0 });
   }
 
   static rehydrate(state: WagerTransactionState): WagerTransaction {
@@ -155,6 +174,8 @@ export class WagerTransaction {
   get failureCode(): FailureCode | undefined { return this.state.failureCode; }
   get processedAt(): Date | undefined { return this.state.processedAt; }
   get observedBalance(): Money | undefined { return this.state.observedBalance; }
+  get retryAttempts(): number { return this.state.retryAttempts; }
+  get nextRetryAt(): Date | undefined { return this.state.nextRetryAt; }
 
   /** Snapshot for persistence mappers. */
   toState(): WagerTransactionState {
@@ -219,6 +240,20 @@ export class WagerTransaction {
     this.transitionTo(Status.Rejected);
     this.state.failureCode = code;
     this.state.observedBalance = observedBalance;
+  }
+
+  /** The worker found the reference still missing: wait 2^attempts x base, capped. */
+  scheduleRetry(now: Date, policy: PendingReferencePolicy): void {
+    if (this.status !== Status.PendingReference) {
+      throw new InvalidTransactionStateError(`transaction ${this.id} is ${this.status}, only PENDING_REFERENCE retries`);
+    }
+    this.state.retryAttempts += 1;
+    const delay = Math.min(2 ** this.state.retryAttempts * policy.baseDelayMs, policy.maxDelayMs);
+    this.state.nextRetryAt = new Date(now.getTime() + delay);
+  }
+
+  hasExhaustedRetries(now: Date, policy: PendingReferencePolicy): boolean {
+    return this.state.retryAttempts >= policy.maxAttempts || now.getTime() - this.createdAt.getTime() >= policy.ttlMs;
   }
 
   fail(code: FailureCode.PermanentFailure): void {

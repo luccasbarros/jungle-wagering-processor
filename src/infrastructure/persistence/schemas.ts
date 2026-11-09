@@ -187,10 +187,12 @@ export const walletToRecord = (wallet: Wallet): WalletRecord => ({
   updatedAt: wallet.updatedAt,
 });
 
-/** Columns a decision writes; retry_attempts/next_retry_at belong to the pending-reference worker and are left alone. */
+/** Every mutable column: a decision or a worker retry writes the whole outcome. */
 export function transactionOutcome(transaction: WagerTransaction) {
   return {
     status: transaction.status,
+    retryAttempts: transaction.retryAttempts,
+    nextRetryAt: transaction.nextRetryAt ?? null,
     referenceTransactionId: transaction.referenceTransactionId ?? null,
     failureCode: transaction.failureCode ?? null,
     observedBalance: transaction.observedBalance?.amount ?? null,
@@ -213,8 +215,6 @@ export const transactionToRecord = (transaction: WagerTransaction): WagerTransac
   amount: transaction.money.amount,
   currency: transaction.money.currency,
   referenceExternalTransactionId: transaction.referenceExternalTransactionId ?? null,
-  retryAttempts: 0,
-  nextRetryAt: null,
   createdAt: transaction.createdAt,
   ...transactionOutcome(transaction),
 });
@@ -238,6 +238,8 @@ export const transactionToDomain = (record: WagerTransactionRecord): WagerTransa
     referenceTransactionId: record.referenceTransactionId ?? undefined,
     failureCode: (record.failureCode ?? undefined) as FailureCode | undefined,
     processedAt: record.processedAt ?? undefined,
+    retryAttempts: record.retryAttempts,
+    nextRetryAt: record.nextRetryAt ?? undefined,
     observedBalance:
       record.observedBalance === null || record.observedBalanceCurrency === null
         ? undefined

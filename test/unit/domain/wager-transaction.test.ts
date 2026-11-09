@@ -188,6 +188,59 @@ describe('WagerTransaction', () => {
       expect(t.processedAt).toEqual(AT);
     });
 
+    describe('pending-reference retry', () => {
+      const policy = { maxAttempts: 3, ttlMs: 60_000, baseDelayMs: 2_000, maxDelayMs: 5_000 };
+      const pending = () => {
+        const t = tx(Kind.Refund, { referenceExternalTransactionId: 'ref' });
+        t.markPendingReference(brl('5.00'));
+        return t;
+      };
+      const secondsAfter = (t: WagerTransaction, from: Date) => (t.nextRetryAt!.getTime() - from.getTime()) / 1000;
+
+      it('starts with zero attempts and no retry due date', () => {
+        const t = pending();
+        expect(t.retryAttempts).toBe(0);
+        expect(t.nextRetryAt).toBeUndefined();
+      });
+
+      it('doubles the delay on each retry and caps it at the policy maximum', () => {
+        const t = pending();
+        t.scheduleRetry(AT, policy);
+        expect(t.retryAttempts).toBe(1);
+        expect(secondsAfter(t, AT)).toBe(4);
+        t.scheduleRetry(AT, policy);
+        expect(secondsAfter(t, AT)).toBe(5);
+        expect(t.status).toBe(Status.PendingReference);
+      });
+
+      it('is exhausted once the attempts reach the cap, even while still young', () => {
+        const t = pending();
+        for (let i = 0; i < policy.maxAttempts - 1; i++) t.scheduleRetry(AT, policy);
+        expect(t.hasExhaustedRetries(AT, policy)).toBe(false);
+        t.scheduleRetry(AT, policy);
+        expect(t.hasExhaustedRetries(AT, policy)).toBe(true);
+      });
+
+      it('is exhausted once it is older than the TTL, even with attempts to spare', () => {
+        const t = pending();
+        expect(t.hasExhaustedRetries(new Date(AT.getTime() + policy.ttlMs - 1), policy)).toBe(false);
+        expect(t.hasExhaustedRetries(new Date(AT.getTime() + policy.ttlMs), policy)).toBe(true);
+      });
+
+      it('refuses to schedule a retry for a transaction that is not waiting for its reference', () => {
+        const t = tx(Kind.Bet);
+        expect(() => t.scheduleRetry(AT, policy)).toThrow(InvalidTransactionStateError);
+      });
+
+      it('keeps the retry counters through rehydrate', () => {
+        const t = pending();
+        t.scheduleRetry(AT, policy);
+        const back = WagerTransaction.rehydrate(t.toState());
+        expect(back.retryAttempts).toBe(1);
+        expect(back.nextRetryAt).toEqual(t.nextRetryAt);
+      });
+    });
+
     it('records the failure code and the balance seen at rejection, for the idempotent replay', () => {
       const t = tx(Kind.Bet);
       t.reject(FailureCode.InsufficientFunds, brl('20.00'));

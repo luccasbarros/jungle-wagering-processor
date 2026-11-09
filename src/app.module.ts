@@ -16,6 +16,7 @@ import { WageringQueries } from './application/use-cases/wagering-queries.ts';
 import { MikroOrmUnitOfWork } from './infrastructure/persistence/mikro-orm-unit-of-work.ts';
 import { createOrm, databaseUrl } from './infrastructure/persistence/orm.ts';
 import { SystemClock, UuidV7IdGenerator } from './infrastructure/system.ts';
+import { pendingReferenceProviders } from './infrastructure/workers/pending-reference-worker.ts';
 
 export interface AppConfig {
   databaseUrl: string;
@@ -51,6 +52,7 @@ export class AppModule {
         useCase(SubmitWagerTransaction),
         useCase(CreateWallet),
         { provide: WageringQueries, useFactory: (uow: UnitOfWork) => new WageringQueries(uow), inject: [UnitOfWork] },
+        ...pendingReferenceProviders(),
         { provide: APP_GUARD, useClass: AuthGuard },
         { provide: APP_FILTER, useClass: HttpErrorFilter },
       ],

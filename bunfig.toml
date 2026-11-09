@@ -1,0 +1,4 @@
+[install]
+# 7 days: freshly published versions are skipped (window for a compromised package to be unpublished)
+minimumReleaseAge = 604800
+exact = true

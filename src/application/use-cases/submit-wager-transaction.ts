@@ -45,7 +45,7 @@ export class SubmitWagerTransaction {
       const result = await this.submit(command, inbox);
       const { transaction, idempotentReplay } = result;
       logContext.assign({ transactionId: transaction.id, status: transaction.status, failureCode: transaction.failureCode, idempotentReplay });
-      if (idempotentReplay) this.metrics.duplicateDetected(inbox ? 'sqs' : 'http');
+      if (idempotentReplay) this.metrics.duplicateDetected('idempotency_key');
       else this.metrics.transactionDecided(transaction.status);
       return result;
     } catch (error) {

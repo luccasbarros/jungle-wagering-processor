@@ -1,6 +1,11 @@
 import { Counter, Gauge, Histogram, Registry } from 'prom-client';
 import type { WagerTransactionStatus } from '../../domain/wager-transaction.ts';
-import { Metrics, type DuplicateSource, type LockConflictReason, type RetryKind } from '../../application/ports/metrics.ts';
+import { Metrics, type DuplicateDetector, type LockConflictReason, type RetryKind } from '../../application/ports/metrics.ts';
+
+export interface ScrapeTimeProbes {
+  outboxLagSeconds(): Promise<number>;
+  deadLetterDepth(): Promise<number>;
+}
 
 // One registry per app instance: the test suites run several apps in one process and the default registry is global.
 export class PrometheusMetrics extends Metrics {
@@ -15,7 +20,7 @@ export class PrometheusMetrics extends Metrics {
   private readonly duplicates = new Counter({
     name: 'duplicates_detected_total',
     help: 'Idempotent replays and inbox redeliveries answered without a new effect',
-    labelNames: ['source'],
+    labelNames: ['detector'],
     registers: [this.registry],
   });
   private readonly retries = new Counter({
@@ -27,6 +32,12 @@ export class PrometheusMetrics extends Metrics {
   private readonly deadLetters = new Counter({
     name: 'dlq_messages_total',
     help: 'Messages sent to the dead-letter queue',
+    registers: [this.registry],
+  });
+  private readonly exhaustedPending = new Counter({
+    name: 'pending_reference_exhausted_total',
+    help: 'Pending transactions the worker gave up on, by the status they ended in',
+    labelNames: ['status'],
     registers: [this.registry],
   });
   private readonly lockConflicts = new Counter({
@@ -47,14 +58,22 @@ export class PrometheusMetrics extends Metrics {
     registers: [this.registry],
   });
 
-  constructor(outboxLagSeconds: () => Promise<number>) {
+  constructor(probes: ScrapeTimeProbes) {
     super();
     new Gauge({
       name: 'outbox_lag_seconds',
       help: 'Age of the oldest unpublished outbox event, read from the database at scrape time',
       registers: [this.registry],
       async collect() {
-        this.set(await outboxLagSeconds());
+        this.set(await probes.outboxLagSeconds());
+      },
+    });
+    new Gauge({
+      name: 'dlq_depth_messages',
+      help: 'Messages waiting in the dead-letter queue, read from SQS at scrape time',
+      registers: [this.registry],
+      async collect() {
+        this.set(await probes.deadLetterDepth());
       },
     });
   }
@@ -62,14 +81,17 @@ export class PrometheusMetrics extends Metrics {
   transactionDecided(status: WagerTransactionStatus): void {
     this.transactions.inc({ status });
   }
-  duplicateDetected(source: DuplicateSource): void {
-    this.duplicates.inc({ source });
+  duplicateDetected(detector: DuplicateDetector): void {
+    this.duplicates.inc({ detector });
   }
   retried(kind: RetryKind): void {
     this.retries.inc({ kind });
   }
   deadLettered(): void {
     this.deadLetters.inc();
+  }
+  pendingReferenceExhausted(status: WagerTransactionStatus): void {
+    this.exhaustedPending.inc({ status });
   }
   lockConflict(reason: LockConflictReason): void {
     this.lockConflicts.inc({ reason });

@@ -17,10 +17,12 @@ export interface ReadinessReport {
 export interface SqsTarget {
   endpoint: string;
   region: string;
-  queueUrl: string;
+  inputQueueUrl: string;
+  deadLetterQueueUrl: string;
 }
 
-export class Readiness {
+/** Live reads of Postgres and SQS for readiness and for the gauges computed at scrape time. */
+export class DependencyProbes {
   private readonly sqs: SQSClient;
 
   constructor(
@@ -35,9 +37,29 @@ export class Readiness {
     });
   }
 
-  async check(): Promise<ReadinessReport> {
-    const [postgres, sqs] = await Promise.all([this.postgres(), this.queue()]);
-    return { ready: postgres && sqs, postgres, sqs };
+  async readiness(): Promise<ReadinessReport> {
+    const [postgres, sqs] = await Promise.all([this.postgres(), this.queueAttribute(this.target.inputQueueUrl, 'QueueArn')]);
+    return { ready: postgres && sqs !== undefined, postgres, sqs: sqs !== undefined };
+  }
+
+  /** NaN when the database cannot answer, so a scrape during an outage reads "unknown" instead of a stale lag. */
+  async outboxLagSeconds(): Promise<number> {
+    try {
+      const [row] = await this.orm().em.getConnection().execute<{ lag: number }[]>(OUTBOX_LAG_SQL);
+      return row?.lag ?? 0;
+    } catch {
+      return NaN;
+    }
+  }
+
+  /** Messages waiting in the DLQ right now; the redrive policy moves them without the app seeing it, so only the queue knows. */
+  async deadLetterDepth(): Promise<number> {
+    const depth = await this.queueAttribute(this.target.deadLetterQueueUrl, 'ApproximateNumberOfMessages');
+    return depth === undefined ? NaN : parseInt(depth, 10);
+  }
+
+  onApplicationShutdown(): void {
+    this.sqs.destroy();
   }
 
   // Not orm.checkConnection(): it reports "not established" until the lazy pool has served a query.
@@ -46,29 +68,15 @@ export class Readiness {
     return (await withinTimeout(probe)) ?? false;
   }
 
-  private async queue(): Promise<boolean> {
+  private async queueAttribute(queueUrl: string, name: 'QueueArn' | 'ApproximateNumberOfMessages'): Promise<string | undefined> {
     try {
-      await this.sqs.send(new GetQueueAttributesCommand({ QueueUrl: this.target.queueUrl, AttributeNames: ['QueueArn'] }), {
+      const { Attributes } = await this.sqs.send(new GetQueueAttributesCommand({ QueueUrl: queueUrl, AttributeNames: [name] }), {
         abortSignal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
       });
-      return true;
+      return Attributes?.[name];
     } catch {
-      return false;
+      return undefined;
     }
-  }
-
-  onApplicationShutdown(): void {
-    this.sqs.destroy();
-  }
-}
-
-/** NaN when the database cannot answer, so a scrape during an outage reads "unknown" instead of a stale lag. */
-export async function outboxLagSeconds(orm: MikroORM): Promise<number> {
-  try {
-    const [row] = await orm.em.getConnection().execute<{ lag: number }[]>(OUTBOX_LAG_SQL);
-    return row?.lag ?? 0;
-  } catch {
-    return NaN;
   }
 }
 

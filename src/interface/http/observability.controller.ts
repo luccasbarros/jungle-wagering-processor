@@ -1,6 +1,6 @@
 import { Controller, Get, Res } from '@nestjs/common';
 import { PrometheusMetrics } from '../../infrastructure/observability/prometheus-metrics.ts';
-import { Readiness, type ReadinessReport } from '../../infrastructure/observability/readiness.ts';
+import { DependencyProbes, type ReadinessReport } from '../../infrastructure/observability/dependency-probes.ts';
 
 interface ResponseLike {
   status(code: number): void;
@@ -11,7 +11,7 @@ interface ResponseLike {
 export class ObservabilityController {
   constructor(
     private readonly metrics: PrometheusMetrics,
-    private readonly readiness: Readiness,
+    private readonly probes: DependencyProbes,
   ) {}
 
   @Get('metrics')
@@ -22,7 +22,7 @@ export class ObservabilityController {
 
   @Get('health/ready')
   async ready(@Res({ passthrough: true }) response: ResponseLike): Promise<ReadinessReport> {
-    const report = await this.readiness.check();
+    const report = await this.probes.readiness();
     response.status(report.ready ? 200 : 503);
     return report;
   }

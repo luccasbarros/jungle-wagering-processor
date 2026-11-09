@@ -204,7 +204,7 @@ describe('POST /wallets/:walletId/reconciliation', () => {
       expect((await reconcile(wallet.id)).body.consistent).toBe(false);
     } finally {
       warn.mockRestore();
-      await db.sql`UPDATE wallets SET balance = balance - 5.00 WHERE id = ${wallet.id}`;
+      await db.sql`UPDATE wallets SET balance = 100.00 WHERE id = ${wallet.id}`;
     }
   });
 

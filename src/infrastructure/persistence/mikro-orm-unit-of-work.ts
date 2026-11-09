@@ -37,12 +37,13 @@ const LOCK_TIMEOUT = '3s';
 // Not FOR UPDATE: it conflicts with the FOR KEY SHARE the transaction insert's FK check holds here, so two bets would deadlock.
 const LOCK_WALLET_SQL = 'select * from wallets where id = ? for no key update';
 
-// SKIP LOCKED skips rows another publisher holds; NOT EXISTS keeps an aggregate's events in order across publishers.
+// SKIP LOCKED skips rows other publishers hold; NOT EXISTS orders an aggregate by (occurred_at, id): siblings share occurred_at, UUIDv7 ids rise in emission order.
 const CLAIM_DUE_OUTBOX_SQL = `select * from outbox_messages o
   where o.published_at is null and (o.next_attempt_at is null or o.next_attempt_at <= ?)
     and not exists (select 1 from outbox_messages earlier
-      where earlier.aggregate_id = o.aggregate_id and earlier.published_at is null and earlier.occurred_at < o.occurred_at)
-  order by o.occurred_at limit ? for update skip locked`;
+      where earlier.aggregate_id = o.aggregate_id and earlier.published_at is null
+        and (earlier.occurred_at, earlier.id) < (o.occurred_at, o.id))
+  order by o.occurred_at, o.id limit ? for update skip locked`;
 
 const REVERSAL_KINDS =[WagerTransactionKind.Refund, WagerTransactionKind.Rollback];
 

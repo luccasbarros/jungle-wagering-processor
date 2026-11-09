@@ -56,7 +56,7 @@ async function drain(sqs: SQSClient, queueUrl: string): Promise<Received[]> {
 
 async function outboxRows(db: TestDatabase) {
   const rows = await db.sql`
-    SELECT id, aggregate_id, occurred_at, attempts, next_attempt_at, published_at FROM outbox_messages ORDER BY occurred_at`;
+    SELECT id, aggregate_id, occurred_at, attempts, next_attempt_at, published_at FROM outbox_messages ORDER BY occurred_at, id`;
   return rows as {
     id: string;
     aggregate_id: string;
@@ -82,8 +82,8 @@ class TestEvent extends IntegrationEvent<{ n: number }> {
   readonly eventType = 'TestEvent';
   readonly version = 1;
 
-  constructor(aggregateId: string, n: number) {
-    super({ eventId: Bun.randomUUIDv7(), aggregateId, correlationId: 'test', occurredAt: new Date(), data: { n } });
+  constructor(aggregateId: string, n: number, occurredAt: Date = new Date()) {
+    super({ eventId: Bun.randomUUIDv7(), aggregateId, correlationId: 'test', occurredAt, data: { n } });
   }
 }
 
@@ -145,8 +145,8 @@ describe('publisher loop inside the Nest app', () => {
       const rows = await rowsOf([wallet]);
 
       expect(rows).toHaveLength(2);
-      expect(received.map((m) => m.eventType).sort()).toEqual(['WagerTransactionProcessed', 'WalletBalanceChanged']);
-      expect(received.map((m) => m.eventId).sort()).toEqual(rows.map((row) => row.id).sort());
+      expect(received.map((m) => m.eventType)).toEqual(['WagerTransactionProcessed', 'WalletBalanceChanged']);
+      expect(received.map((m) => m.eventId)).toEqual(rows.map((row) => row.id));
       expect(received.every((m) => m.groupId === wallet.id && m.dedupId === m.eventId)).toBe(true);
       await expectMoneyInvariants(db);
     } finally {
@@ -184,12 +184,11 @@ describe('publisher loop inside the Nest app', () => {
       expect(rows.length).toBe(10 * 2 + 60 * 2);
       expect(new Set(received.map((m) => m.eventId)).size).toBe(rows.length);
       expect(received).toHaveLength(rows.length);
-      // Sibling events of one transaction share occurredAt, so the guarantee is non-decreasing time per wallet, not a total order.
-      const occurredAt = new Map(rows.map((row) => [row.id, row.occurred_at.getTime()]));
+      // Total order per wallet, siblings included: rows come back ordered by (occurred_at, id), the publisher's claim order.
       for (const wallet of wallets) {
-        const times = received.filter((m) => m.groupId === wallet.id).map((m) => occurredAt.get(m.eventId)!);
-        expect(times).toHaveLength(2 + 6 * 2);
-        expect(times).toEqual([...times].sort((a, b) => a - b));
+        const expectedOrder = rows.filter((row) => row.aggregate_id === wallet.id).map((row) => row.id);
+        expect(expectedOrder).toHaveLength(2 + 6 * 2);
+        expect(received.filter((m) => m.groupId === wallet.id).map((m) => m.eventId)).toEqual(expectedOrder);
       }
       await expectMoneyInvariants(db);
     } finally {
@@ -201,15 +200,16 @@ describe('publisher loop inside the Nest app', () => {
     const app = await createApp({ databaseUrl: db.url });
     await app.listen(0);
     const uow = new MikroOrmUnitOfWork(db.orm);
-    await uow.transaction(({ outbox }) => outbox.enqueue([new TestEvent(crypto.randomUUID(), 1)]));
-    expect(await waitUntil(allPublished(db))).toBe(true);
+    const [beforeClose, afterClose] = [new TestEvent(crypto.randomUUID(), 1), new TestEvent(crypto.randomUUID(), 2)];
+    const publishedAt = async (event: TestEvent) => (await outboxRows(db)).find((row) => row.id === event.eventId)?.published_at ?? null;
+    await uow.transaction(({ outbox }) => outbox.enqueue([beforeClose]));
+    expect(await waitUntil(async () => (await publishedAt(beforeClose)) !== null)).toBe(true);
 
     await app.close();
 
-    await uow.transaction(({ outbox }) => outbox.enqueue([new TestEvent(crypto.randomUUID(), 2)]));
+    await uow.transaction(({ outbox }) => outbox.enqueue([afterClose]));
     await Bun.sleep(OUTBOX_POLL_INTERVAL_MS * 3);
-    const pending = (await outboxRows(db)).filter((row) => row.published_at === null);
-    expect(pending).toHaveLength(1);
+    expect(await publishedAt(afterClose)).toBeNull();
   });
 });
 
@@ -251,8 +251,7 @@ describe('one publisher round against the real queue', () => {
   });
 
   it('skips the row another publisher holds and publishes the rest without waiting', async () => {
-    const aggregateId = crypto.randomUUID();
-    const events = [new TestEvent(aggregateId, 1), new TestEvent(aggregateId, 2), new TestEvent(aggregateId, 3)];
+    const events = [1, 2, 3].map((n) => new TestEvent(crypto.randomUUID(), n));
     await enqueue(events);
     const otherPublisher = await db.sql.reserve();
     try {
@@ -262,15 +261,35 @@ describe('one publisher round against the real queue', () => {
       const started = Date.now();
       expect(await publisher.execute()).toEqual({ published: 2, failed: 0 });
       expect(Date.now() - started).toBeLessThan(2_000);
-
-      await otherPublisher`ROLLBACK`;
     } finally {
+      await otherPublisher`ROLLBACK`;
       otherPublisher.release();
     }
     const rows = await outboxRows(db);
     expect(rows.filter((row) => row.published_at !== null).map((row) => row.id)).toEqual([events[0]!.eventId, events[2]!.eventId]);
     expect(rows.find((row) => row.id === events[1]!.eventId)!.published_at).toBeNull();
     expect((await drain(sqs, queueUrl)).map((m) => m.eventId)).toEqual([events[0]!.eventId, events[2]!.eventId]);
+  });
+
+  it('holds back a sibling event of the same aggregate and instant while the earlier-emitted one is still pending', async () => {
+    const aggregateId = crypto.randomUUID();
+    const at = new Date();
+    const [first, second] = [new TestEvent(aggregateId, 1, at), new TestEvent(aggregateId, 2, at)];
+    await enqueue([first, second]);
+    const otherPublisher = await db.sql.reserve();
+    try {
+      await otherPublisher`BEGIN`;
+      await otherPublisher`SELECT id FROM outbox_messages WHERE id = ${first.eventId} FOR UPDATE`;
+      expect(await publisher.execute()).toEqual({ published: 0, failed: 0 });
+    } finally {
+      await otherPublisher`ROLLBACK`;
+      otherPublisher.release();
+    }
+
+    // One event per aggregate per round: the claim is one snapshot, so the sibling leaves on the next round.
+    expect(await publisher.execute()).toEqual({ published: 1, failed: 0 });
+    expect(await publisher.execute()).toEqual({ published: 1, failed: 0 });
+    expect((await drain(sqs, queueUrl)).map((m) => m.eventId)).toEqual([first.eventId, second.eventId]);
   });
 
   it('lets another instance republish when a publisher dies after publishing but before committing, and the queue sees one eventId', async () => {

@@ -1,6 +1,19 @@
 import { FailureCode } from '../domain/failure-codes.ts';
 import type { LockConflictReason } from './ports/metrics.ts';
 
+/** Class name and driver/SQLSTATE code only: a driver message echoes the failing statement, SQL parameters and amounts included (spec 12). */
+export function safeReason(error: unknown): string {
+  if (!(error instanceof Error)) return 'UnknownError';
+  const { code } = error as { code?: unknown };
+  return typeof code === 'string' ? `${error.name} (${code})` : error.name;
+}
+
+/** Stack frames without the first line, which repeats the message. */
+export function safeStack(error: unknown): string | undefined {
+  if (!(error instanceof Error) || !error.stack) return undefined;
+  return error.stack.split('\n').filter((line) => line.startsWith('    at ')).join('\n');
+}
+
 /** Infrastructure hiccup (lock timeout, deadlock, lost connection, concurrent version bump): the same request may succeed later. */
 export class TransientFailureError extends Error {
   readonly code = FailureCode.TransientFailure;

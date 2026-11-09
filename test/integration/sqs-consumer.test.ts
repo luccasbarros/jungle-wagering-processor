@@ -203,6 +203,8 @@ describe('SQS consumer of wager-transactions.fifo', () => {
     const [dead] = await queues.receive(queues.config.dlqUrl);
     expect(dead?.Body).toBe(delivery!.Body);
     expect(dead?.MessageAttributes?.failureCode?.StringValue).toBe('TRANSIENT_FAILURE');
+    // Class and code only: a driver message would echo the SQL parameters, amount included (spec 12).
+    expect(dead?.MessageAttributes?.failureReason?.StringValue).toBe(`gave up after ${MAX_RECEIVE_COUNT} deliveries: LockConflictError (TRANSIENT_FAILURE)`);
     expect(await debitsOf(wallet.id)).toBe(0);
     await queues.sqs.send(new DeleteMessageCommand({ QueueUrl: queues.config.queueUrl, ReceiptHandle: delivery!.ReceiptHandle }));
   }, TEST_TIMEOUT_MS);

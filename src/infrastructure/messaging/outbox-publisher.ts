@@ -4,13 +4,14 @@ import { Clock } from '../../application/ports/clock.ts';
 import { EventPublisher } from '../../application/ports/event-publisher.ts';
 import { UnitOfWork } from '../../application/ports/unit-of-work.ts';
 import { Metrics } from '../../application/ports/metrics.ts';
-import { OUTBOX_BATCH_SIZE, PublishOutbox } from '../../application/use-cases/publish-outbox.ts';
+import { PublishOutbox } from '../../application/use-cases/publish-outbox.ts';
+import { safeReason } from '../../application/errors.ts';
 import { SqsEventPublisher } from './sqs-event-publisher.ts';
 import { createSqsClient, wagerEventsQueueUrl } from './sqs.ts';
 
 export const OUTBOX_POLL_INTERVAL_MS = 500;
 
-/** Runs PublishOutbox for the life of the Nest app; a full batch polls again at once, otherwise it waits the interval. */
+/** Runs PublishOutbox for the life of the Nest app; polls again at once while rounds claim something, waits the interval only on an empty round. */
 export class OutboxPublisherLoop {
   private readonly logger = new Logger(OutboxPublisherLoop.name);
   private running = false;
@@ -42,9 +43,10 @@ export class OutboxPublisherLoop {
         claimed = published + failed;
         if (failed > 0) this.logger.warn(`outbox: ${failed} message(s) failed to publish, retry scheduled`);
       } catch (error) {
-        this.logger.warn(`outbox: round failed, will retry (${error instanceof Error ? error.message : String(error)})`);
+        this.logger.warn(`outbox: round failed, will retry (${safeReason(error)})`);
       }
-      if (claimed < OUTBOX_BATCH_SIZE) await this.pause();
+      // A round claims one event per wallet; sleeping on any short batch capped a hot wallet at 1 event per interval.
+      if (claimed === 0) await this.pause();
     }
   }
 

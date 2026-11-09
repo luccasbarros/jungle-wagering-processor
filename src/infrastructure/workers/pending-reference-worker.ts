@@ -4,6 +4,7 @@ import { IdGenerator } from '../../application/ports/id-generator.ts';
 import { UnitOfWork } from '../../application/ports/unit-of-work.ts';
 import { Metrics } from '../../application/ports/metrics.ts';
 import { logContext } from '../../application/log-context.ts';
+import { safeReason, safeStack } from '../../application/errors.ts';
 import { ProcessPendingReferences } from '../../application/use-cases/process-pending-references.ts';
 import { DEFAULT_PENDING_REFERENCE_POLICY } from '../../domain/wager-transaction.ts';
 
@@ -34,7 +35,8 @@ export class PendingReferenceWorker {
     this.timer.unref?.();
   }
 
-  async onApplicationShutdown(): Promise<void> {
+  // before, not on, ApplicationShutdown: Nest runs same-level onApplicationShutdown hooks in parallel with the ORM close.
+  async beforeApplicationShutdown(): Promise<void> {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     await this.inFlight;
@@ -52,7 +54,7 @@ export class PendingReferenceWorker {
         }
         if (counts.processed || counts.rejected || counts.failed || counts.errors) this.logger.log(JSON.stringify(counts));
       } catch (error) {
-        this.logger.error('pending-reference tick failed', error instanceof Error ? error.stack : String(error));
+        this.logger.error(`pending-reference tick failed: ${safeReason(error)}`, safeStack(error));
       }
     });
     return this.inFlight;

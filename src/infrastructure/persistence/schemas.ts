@@ -6,7 +6,7 @@ import {
   type WagerTransactionKind,
   type WagerTransactionStatus,
 } from '../../domain/wager-transaction.ts';
-import type { LedgerDirection, WalletLedgerEntry } from '../../domain/wallet-ledger-entry.ts';
+import { WalletLedgerEntry, type LedgerDirection } from '../../domain/wallet-ledger-entry.ts';
 import type { FailureCode } from '../../domain/failure-codes.ts';
 import { OutboxMessage } from '../../domain/outbox-message.ts';
 import type { InboxMessage } from '../../domain/inbox-message.ts';
@@ -257,6 +257,20 @@ export const ledgerEntryToRecord = (entry: WalletLedgerEntry): LedgerEntryRecord
   currency: entry.money.currency,
   createdAt: entry.createdAt,
 });
+
+export const ledgerEntryToDomain = (record: LedgerEntryRecord): WalletLedgerEntry => {
+  const money = (amount: string) => Money.from({ amount, currency: record.currency });
+  return WalletLedgerEntry.rehydrate({
+    id: record.id,
+    walletId: record.walletId,
+    transactionId: record.transactionId,
+    direction: record.direction as LedgerDirection,
+    money: money(record.amount),
+    balanceBefore: money(record.balanceBefore),
+    balanceAfter: money(record.balanceAfter),
+    createdAt: record.createdAt,
+  });
+};
 
 export const outboxToRecord = (message: OutboxMessage): OutboxRecord => ({
   id: message.id,

@@ -19,6 +19,7 @@ import {
   WagerTransactionSchema,
   WalletSchema,
   inboxToRecord,
+  ledgerEntryToDomain,
   ledgerEntryToRecord,
   outboxToDomain,
   outboxToRecord,
@@ -27,16 +28,32 @@ import {
   transactionToRecord,
   walletToDomain,
   walletToRecord,
+  type LedgerEntryRecord,
   type OutboxRecord,
   type WagerTransactionRecord,
   type WalletRecord,
 } from './schemas.ts';
+import { Money } from '../../domain/money.ts';
 
 // Plan 4.1: a request that waits longer than this for a wallet gets a 503 and retries instead of piling up.
 const LOCK_TIMEOUT = '3s';
 
 // Not FOR UPDATE: it conflicts with the FOR KEY SHARE the transaction insert's FK check holds here, so two bets would deadlock.
 const LOCK_WALLET_SQL = 'select * from wallets where id = ? for no key update';
+
+const LEDGER_PAGE_SQL = 'select * from wallet_ledger_entries where wallet_id = ? order by seq desc limit ?';
+const LEDGER_PAGE_BEFORE_SQL = 'select * from wallet_ledger_entries where wallet_id = ? and seq < ? order by seq desc limit ?';
+
+// One statement is one snapshot under READ COMMITTED; reading the wallet and the ledger separately lets a bet commit in between.
+const LEDGER_TOTALS_SQL = `
+  select w.balance::text as balance, w.currency,
+    round(coalesce(sum(l.amount) filter (where l.direction = 'CREDIT'), 0), 2)::text as credits,
+    round(coalesce(sum(l.amount) filter (where l.direction = 'DEBIT'), 0), 2)::text as debits,
+    count(l.id) as entries
+  from wallets w left join wallet_ledger_entries l on l.wallet_id = w.id
+  where w.id = ?
+  group by w.id`;
+
 
 // SKIP LOCKED skips rows other publishers hold; NOT EXISTS orders an aggregate by (occurred_at, id): siblings share occurred_at, UUIDv7 ids rise in emission order.
 const CLAIM_DUE_OUTBOX_SQL = `select * from outbox_messages o
@@ -138,6 +155,23 @@ function repositoriesFor(em: EntityManager): Repositories {
     ledger: {
       async append(entry) {
         await em.insert(LedgerEntrySchema, ledgerEntryToRecord(entry));
+      },
+      async pageNewestFirst(walletId, beforeSeq, limit) {
+        type Row = LedgerEntryRecord & { seq: string };
+        const rows =
+          beforeSeq === undefined
+            ? await em.execute<Row[]>(LEDGER_PAGE_SQL, [walletId, limit])
+            : await em.execute<Row[]>(LEDGER_PAGE_BEFORE_SQL, [walletId, beforeSeq, limit]);
+        return rows.map((row) => ({ entry: ledgerEntryToDomain(em.map(LedgerEntrySchema, row)), seq: String(row.seq) }));
+      },
+      async totals(walletId) {
+        const [row] = await em.execute<{ balance: string; currency: string; credits: string; debits: string; entries: string }[]>(
+          LEDGER_TOTALS_SQL,
+          [walletId],
+        );
+        if (!row) return undefined;
+        const money = (amount: string) => Money.from({ amount, currency: row.currency });
+        return { storedBalance: money(row.balance), credits: money(row.credits), debits: money(row.debits), entries: Number(row.entries) };
       },
     },
     outbox: {

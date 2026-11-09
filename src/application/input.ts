@@ -58,6 +58,33 @@ export function parseWagerPayload(value: unknown): WagerPayload {
   };
 }
 
+const DEFAULT_LEDGER_PAGE_SIZE = 50;
+const MAX_LEDGER_PAGE_SIZE = 200;
+const POSITIVE_INTEGER = /^[1-9]\d*$/;
+// BIGINT ceiling: a larger position would fail inside the query as 500 instead of here as 400.
+const MAX_LEDGER_SEQ = 2n ** 63n - 1n;
+
+export interface LedgerPageQuery {
+  beforeSeq?: string;
+  limit: number;
+}
+
+export function parseLedgerPage(cursor: unknown, limit: unknown): LedgerPageQuery {
+  if (limit !== undefined && (typeof limit !== 'string' || !POSITIVE_INTEGER.test(limit) || Number(limit) > MAX_LEDGER_PAGE_SIZE)) {
+    throw invalid(`limit must be an integer from 1 to ${MAX_LEDGER_PAGE_SIZE}`);
+  }
+  const size = limit === undefined ? DEFAULT_LEDGER_PAGE_SIZE : Number(limit);
+  if (cursor === undefined) return { limit: size };
+  const seq = typeof cursor === 'string' ? Buffer.from(cursor, 'base64url').toString() : '';
+  if (!POSITIVE_INTEGER.test(seq) || BigInt(seq) > MAX_LEDGER_SEQ) {
+    throw new DomainError(FailureCode.InvalidCursor, 'cursor was not handed out by this API; restart from the first page without a cursor');
+  }
+  return { beforeSeq: seq, limit: size };
+}
+
+/** Opaque to clients: they echo it back, never build it. */
+export const encodeLedgerCursor = (seq: string): string => Buffer.from(seq).toString('base64url');
+
 export function parseCreateWallet(value: unknown): { playerId: string; initialBalance: Money } {
   const body = asBody(value);
   return { playerId: text(body, 'playerId'), initialBalance: Money.from(body.initialBalance as MoneyProps) };

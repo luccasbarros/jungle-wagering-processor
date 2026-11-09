@@ -21,6 +21,7 @@ import { OUTBOX_PROVIDERS } from './infrastructure/messaging/outbox-publisher.ts
 import { NestPinoLogger } from './infrastructure/observability/logger.ts';
 import { Metrics } from './application/ports/metrics.ts';
 import { ObservabilityModule, type ObservabilityConfig } from './infrastructure/observability/observability.module.ts';
+import { QueriesModule } from './queries.module.ts';
 
 export interface AppConfig {
   databaseUrl: string;
@@ -45,9 +46,13 @@ const useCase = <T>(UseCase: new (uow: UnitOfWork, clock: Clock, ids: IdGenerato
 @Module({})
 export class AppModule {
   static register(config: AppConfig): DynamicModule {
+    const observability = ObservabilityModule.register(config.observability);
     return {
       module: AppModule,
-      imports: [ObservabilityModule.register(config.observability)],
+      // Global so slice modules (imports) can inject the shared ports without a second ORM, pool or metrics registry.
+      global: true,
+      imports: [observability, QueriesModule],
+      exports: [UnitOfWork, Clock, IdGenerator, WageringQueries, observability],
       controllers: [HealthController, WalletsController, WageringController],
       providers: [
         { provide: MikroORM, useFactory: () => createOrm(config.databaseUrl) },

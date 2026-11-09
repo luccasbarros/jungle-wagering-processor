@@ -81,6 +81,9 @@ export class Migration20261109000000InitialSchema extends Migration {
         )
       )`);
 
+    // Keyset pagination of a wallet's ledger and the reconciliation sum both read one wallet's entries in seq order.
+    this.addSql('CREATE INDEX ix_ledger_wallet_seq ON wallet_ledger_entries (wallet_id, seq)');
+
     this.addSql(`
       CREATE FUNCTION ledger_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
+import { CreateQueueCommand, DeleteQueueCommand, SendMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
 import type { INestApplication } from '@nestjs/common';
 import { createApp } from '../../src/app.module.ts';
 import { databaseUrl } from '../../src/infrastructure/persistence/orm.ts';
@@ -43,5 +44,29 @@ describe('GET /health/ready', () => {
     const baseUrl = await start({ databaseUrl: databaseUrl(), observability: { sqsEndpoint: DEAD_SQS_ENDPOINT } });
 
     expect(await get(`${baseUrl}/health/ready`)).toEqual({ status: 503, body: { ready: false, postgres: true, sqs: false } });
+  });
+});
+
+describe('dlq_depth_messages', () => {
+  it('reports how many messages sit in the dead-letter queue right now, read from SQS at scrape time', async () => {
+    const sqs = new SQSClient({ endpoint: 'http://localhost:4566', region: 'us-east-1', credentials: { accessKeyId: 'test', secretAccessKey: 'test' } });
+    // A queue of its own: the real DLQ is shared with the consumer suites running in parallel.
+    const { QueueUrl } = await sqs.send(new CreateQueueCommand({ QueueName: `observability-dlq-${crypto.randomUUID()}` }));
+    try {
+      for (const body of ['first', 'second']) await sqs.send(new SendMessageCommand({ QueueUrl, MessageBody: body }));
+      const baseUrl = await start({ databaseUrl: databaseUrl(), observability: { deadLetterQueueUrl: QueueUrl } });
+
+      expect(await fetch(`${baseUrl}/metrics`).then((r) => r.text())).toContain('\ndlq_depth_messages 2\n');
+    } finally {
+      await sqs.send(new DeleteQueueCommand({ QueueUrl }));
+      sqs.destroy();
+    }
+  });
+
+  it('reads NaN instead of a stale number when SQS is unreachable', async () => {
+    const baseUrl = await start({ databaseUrl: databaseUrl(), observability: { sqsEndpoint: DEAD_SQS_ENDPOINT } });
+
+    // prom-client prints "Nan"; Prometheus parses it with Go's ParseFloat, which ignores case.
+    expect(await fetch(`${baseUrl}/metrics`).then((r) => r.text())).toMatch(/\ndlq_depth_messages nan\n/i);
   });
 });

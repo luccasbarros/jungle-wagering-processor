@@ -2,6 +2,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
 import type { INestApplication } from '@nestjs/common';
 import { createApp } from '../../src/app.module.ts';
 import { createLogger } from '../../src/infrastructure/observability/logger.ts';
+import { PENDING_REFERENCE_POLL_INTERVAL_ENV } from '../../src/infrastructure/workers/pending-reference-worker.ts';
+import { DEFAULT_PENDING_REFERENCE_POLICY } from '../../src/domain/wager-transaction.ts';
 import { createTestDatabase, type TestDatabase } from './support/test-database.ts';
 import { apiClient, BRL, expectMoneyInvariants, wager, type ApiClient } from './support/test-app.ts';
 
@@ -13,7 +15,12 @@ const REQUIRED_METRICS = [
   'lock_conflicts_total',
   'outbox_lag_seconds',
   'processing_duration_seconds',
+  'dlq_depth_messages',
+  'pending_reference_exhausted_total',
 ];
+
+// Fast enough that a test waits a few hundred ms for the worker, slow enough not to spin.
+const WORKER_INTERVAL_MS = '100';
 
 // Distinct amounts, so finding one of them anywhere in a log line means money leaked.
 const BET_AMOUNT = '73.19';
@@ -27,6 +34,7 @@ let baseUrl: string;
 const logLines: string[] = [];
 
 beforeAll(async () => {
+  process.env[PENDING_REFERENCE_POLL_INTERVAL_ENV] = WORKER_INTERVAL_MS;
   db = await createTestDatabase('observability');
   app = await createApp({
     databaseUrl: db.url,
@@ -42,6 +50,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
+  delete process.env[PENDING_REFERENCE_POLL_INTERVAL_ENV];
   await app.close();
   await db.drop();
 });
@@ -64,14 +73,16 @@ async function delta(series: string, action: () => Promise<unknown>): Promise<nu
   return sample(await scrape(), series) - before;
 }
 
-async function requestLine(correlationId: string): Promise<Record<string, unknown>> {
-  for (let attempt = 0; attempt < 50; attempt++) {
-    const line = logLines.find((l) => l.includes('request completed') && l.includes(correlationId));
+async function logLine(message: string, id: string): Promise<Record<string, unknown>> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const line = logLines.find((l) => l.includes(`"msg":"${message}`) && l.includes(id));
     if (line) return JSON.parse(line);
     await Bun.sleep(20);
   }
-  throw new Error(`no request log line for ${correlationId}`);
+  throw new Error(`no "${message}" log line for ${id}`);
 }
+
+const requestLine = (correlationId: string) => logLine('request completed', correlationId);
 
 describe('GET /metrics', () => {
   it('exposes every metric the spec requires in the Prometheus text format', async () => {
@@ -106,7 +117,8 @@ describe('GET /metrics', () => {
 
     const after = await scrape();
     expect(replay.body.idempotentReplay).toBe(true);
-    expect(sample(after, 'duplicates_detected_total{source="http"}') - sample(before, 'duplicates_detected_total{source="http"}')).toBe(1);
+    const duplicates = 'duplicates_detected_total{detector="idempotency_key"}';
+    expect(sample(after, duplicates) - sample(before, duplicates)).toBe(1);
     expect(sample(after, 'wager_transactions_total{status="PROCESSED"}')).toBe(sample(before, 'wager_transactions_total{status="PROCESSED"}'));
   });
 
@@ -140,6 +152,27 @@ describe('GET /metrics', () => {
     await Bun.sleep(300);
 
     expect(sample(await scrape(), 'outbox_lag_seconds')).toBeGreaterThanOrEqual(0.3);
+  });
+});
+
+describe('pending reference worker', () => {
+  it('counts each retry and the policy giving up, and logs every attempt with the transaction as its correlationId', async () => {
+    const wallet = await api.wallet('10.00');
+    const before = await scrape();
+    const pending = await api.submit(wager(wallet, { kind: 'ROLLBACK', referenceExternalTransactionId: crypto.randomUUID() }));
+    expect(pending.status).toBe(202);
+    const id = pending.body.transactionId as string;
+
+    const retried = await logLine('pending reference retried', id);
+    expect(retried).toMatchObject({ correlationId: id, transactionId: id, walletId: wallet.id, providerId: 'provider-a', status: 'PENDING_REFERENCE' });
+    await db.sql`UPDATE wager_transactions SET retry_attempts = ${DEFAULT_PENDING_REFERENCE_POLICY.maxAttempts}, next_retry_at = now() WHERE id = ${id}`;
+    expect(await logLine('pending reference rejected', id)).toMatchObject({ correlationId: id, status: 'REJECTED', failureCode: 'REFERENCE_NOT_FOUND' });
+
+    const after = await scrape();
+    const moved = (series: string) => sample(after, series) - sample(before, series);
+    expect(moved('retries_total{kind="pending_reference"}')).toBeGreaterThanOrEqual(1);
+    expect(moved('pending_reference_exhausted_total{status="REJECTED"}')).toBe(1);
+    expect(moved('wager_transactions_total{status="REJECTED"}')).toBe(1);
   });
 });
 

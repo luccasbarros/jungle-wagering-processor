@@ -6,6 +6,7 @@ import { SystemClock, UuidV7IdGenerator } from '../../src/infrastructure/system.
 import { ProcessPendingReferences } from '../../src/application/use-cases/process-pending-references.ts';
 import { PENDING_REFERENCE_POLL_INTERVAL_ENV } from '../../src/infrastructure/workers/pending-reference-worker.ts';
 import { DEFAULT_PENDING_REFERENCE_POLICY } from '../../src/domain/wager-transaction.ts';
+import { PrometheusMetrics } from '../../src/infrastructure/observability/prometheus-metrics.ts';
 import {
   BRL,
   eventTypesOf,
@@ -32,7 +33,7 @@ beforeAll(async () => {
   apps = await startTestApps('pending_reference_worker');
   api = apps.apis[0]!;
   orms = await Promise.all([createOrm(apps.db.url), createOrm(apps.db.url)]);
-  workers = orms.map((orm) => new ProcessPendingReferences(new MikroOrmUnitOfWork(orm), new SystemClock(), new UuidV7IdGenerator(), { policy: POLICY }));
+  workers = orms.map((orm) => new ProcessPendingReferences(new MikroOrmUnitOfWork(orm), new SystemClock(), new UuidV7IdGenerator(), new PrometheusMetrics({ outboxLagSeconds: async () => 0, deadLetterDepth: async () => 0 }), { policy: POLICY }));
 });
 
 afterEach(async () => {

@@ -38,7 +38,7 @@ export class SubmitWagerTransaction {
     private readonly metrics: Metrics,
   ) {}
 
-  /** `inbox` joins the same SQL transaction, so a redelivered message and its effect commit or roll back together. */
+  /** `inbox` joins the same SQL transaction, so a redelivered message and its effect commit or roll back together; on a replay it is recorded alone, and a messageId the inbox already knows throws DuplicateInboxMessageError before anything is counted. */
   async execute(command: SubmitWagerCommand, inbox?: InboxMessage): Promise<SubmitWagerResult> {
     const started = performance.now();
     try {
@@ -65,7 +65,7 @@ export class SubmitWagerTransaction {
       createdAt: this.clock.now(),
     });
 
-    const known = await this.replay(transaction);
+    const known = await this.replay(transaction, inbox);
     if (known) return known;
 
     try {
@@ -75,18 +75,19 @@ export class SubmitWagerTransaction {
       if (error.field === 'externalTransactionId') {
         throw new DomainError(FailureCode.IdempotencyConflict, 'externalTransactionId was already submitted under another Idempotency-Key');
       }
-      const winner = await this.replay(transaction);
+      const winner = await this.replay(transaction, inbox);
       if (!winner) throw new TransientFailureError('idempotency key collided with a transaction that is not visible yet', { cause: error });
       return winner;
     }
   }
 
-  private async replay(candidate: WagerTransaction): Promise<SubmitWagerResult | undefined> {
+  private async replay(candidate: WagerTransaction, inbox: InboxMessage | undefined): Promise<SubmitWagerResult | undefined> {
     const stored = await this.uow.read((r) => r.transactions.findByIdempotencyKey(candidate.idempotencyKey));
     if (!stored) return undefined;
     if (!stored.matchesPayload(candidate.payloadHash)) {
       throw new DomainError(FailureCode.IdempotencyConflict, 'Idempotency-Key was already used with a different payload');
     }
+    if (inbox) await this.uow.transaction((r) => r.inbox.add(inbox));
     return { transaction: stored, idempotentReplay: true };
   }
 

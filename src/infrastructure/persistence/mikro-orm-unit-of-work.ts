@@ -19,12 +19,14 @@ import {
   WalletSchema,
   inboxToRecord,
   ledgerEntryToRecord,
+  outboxToDomain,
   outboxToRecord,
   transactionOutcome,
   transactionToDomain,
   transactionToRecord,
   walletToDomain,
   walletToRecord,
+  type OutboxRecord,
   type WagerTransactionRecord,
   type WalletRecord,
 } from './schemas.ts';
@@ -35,7 +37,15 @@ const LOCK_TIMEOUT = '3s';
 // Not FOR UPDATE: it conflicts with the FOR KEY SHARE the transaction insert's FK check holds here, so two bets would deadlock.
 const LOCK_WALLET_SQL = 'select * from wallets where id = ? for no key update';
 
-const REVERSAL_KINDS = [WagerTransactionKind.Refund, WagerTransactionKind.Rollback];
+// SKIP LOCKED skips rows other publishers hold; NOT EXISTS orders an aggregate by (occurred_at, id): siblings share occurred_at, UUIDv7 ids rise in emission order.
+const CLAIM_DUE_OUTBOX_SQL = `select * from outbox_messages o
+  where o.published_at is null and (o.next_attempt_at is null or o.next_attempt_at <= ?)
+    and not exists (select 1 from outbox_messages earlier
+      where earlier.aggregate_id = o.aggregate_id and earlier.published_at is null
+        and (earlier.occurred_at, earlier.id) < (o.occurred_at, o.id))
+  order by o.occurred_at, o.id limit ? for update skip locked`;
+
+const REVERSAL_KINDS =[WagerTransactionKind.Refund, WagerTransactionKind.Rollback];
 
 // One row per claim: each pending transaction gets its own SQL transaction, so a poison row never holds up the batch.
 // NULL next_retry_at is "never tried" and goes first. SKIP LOCKED is what lets N workers share the queue without waiting.
@@ -133,6 +143,17 @@ function repositoriesFor(em: EntityManager): Repositories {
       async enqueue(events) {
         if (events.length === 0) return;
         await em.insertMany(OutboxSchema, events.map((event) => outboxToRecord(OutboxMessage.enqueue(event))));
+      },
+      async claimDue(now, limit) {
+        const rows = await em.execute<OutboxRecord[]>(CLAIM_DUE_OUTBOX_SQL, [now, limit]);
+        return rows.map((row) => outboxToDomain(em.map(OutboxSchema, row)));
+      },
+      async save(message) {
+        await em.nativeUpdate(
+          OutboxSchema,
+          { id: message.id },
+          { attempts: message.attempts, nextAttemptAt: message.nextAttemptAt ?? null, publishedAt: message.publishedAt ?? null },
+        );
       },
     },
     inbox: {

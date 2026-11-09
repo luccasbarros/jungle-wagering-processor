@@ -4,7 +4,7 @@ import type { WagerTransaction } from '../../domain/wager-transaction.ts';
 import { SubmitWagerTransaction } from '../../application/use-cases/submit-wager-transaction.ts';
 import { WageringQueries } from '../../application/use-cases/wagering-queries.ts';
 import { parseIdempotencyKey, parseUuid, parseWagerPayload } from '../../application/input.ts';
-import { CORRELATION_HEADER, HTTP_STATUS_BY_TRANSACTION_STATUS, correlationIdFrom } from './http-contract.ts';
+import { CORRELATION_HEADER, correlationIdFrom, httpStatusFor } from './http-contract.ts';
 
 interface SubmissionView {
   transactionId: string;
@@ -53,7 +53,7 @@ export class WageringController {
       correlationId: correlationIdFrom(correlationId),
     };
     const { transaction, idempotentReplay } = await this.submitWager.execute(command);
-    response.status(HTTP_STATUS_BY_TRANSACTION_STATUS[transaction.status] ?? 500);
+    response.status(httpStatusFor(transaction.status));
     return {
       transactionId: transaction.id,
       status: transaction.status,

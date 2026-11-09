@@ -76,7 +76,9 @@ export function parseLedgerPage(cursor: unknown, limit: unknown): LedgerPageQuer
   const size = limit === undefined ? DEFAULT_LEDGER_PAGE_SIZE : Number(limit);
   if (cursor === undefined) return { limit: size };
   const seq = typeof cursor === 'string' ? Buffer.from(cursor, 'base64url').toString() : '';
-  if (!POSITIVE_INTEGER.test(seq) || BigInt(seq) > MAX_LEDGER_SEQ) throw invalid('cursor is not a ledger position handed out by this API');
+  if (!POSITIVE_INTEGER.test(seq) || BigInt(seq) > MAX_LEDGER_SEQ) {
+    throw new DomainError(FailureCode.InvalidCursor, 'cursor was not handed out by this API; restart from the first page without a cursor');
+  }
   return { beforeSeq: seq, limit: size };
 }
 

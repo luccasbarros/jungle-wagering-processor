@@ -5,6 +5,7 @@ import { WagerTransactionStatus } from '../../domain/wager-transaction.ts';
 export const HTTP_STATUS_BY_FAILURE_CODE: Partial<Record<FailureCode, number>> = {
   [FailureCode.InvalidPayload]: 400,
   [FailureCode.InvalidMoney]: 400,
+  [FailureCode.InvalidCursor]: 400,
   [FailureCode.MissingIdempotencyKey]: 400,
   [FailureCode.KindNotSubmittable]: 400,
   [FailureCode.WalletNotFound]: 404,

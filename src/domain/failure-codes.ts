@@ -12,6 +12,8 @@ export enum FailureCode {
   AmountMismatch = 'AMOUNT_MISMATCH',
   InvalidPayload = 'INVALID_PAYLOAD',
   InvalidMoney = 'INVALID_MONEY',
+  /** The pagination cursor is not one this API handed out: restart from the first page. */
+  InvalidCursor = 'INVALID_CURSOR',
   MissingIdempotencyKey = 'MISSING_IDEMPOTENCY_KEY',
   KindNotSubmittable = 'KIND_NOT_SUBMITTABLE',
   IdempotencyConflict = 'IDEMPOTENCY_CONFLICT',

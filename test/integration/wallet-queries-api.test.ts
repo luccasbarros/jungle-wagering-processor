@@ -122,12 +122,12 @@ describe('GET /wallets/:walletId/ledger', () => {
     }
   });
 
-  it('rejects a cursor that does not decode to a ledger position with 400 INVALID_PAYLOAD instead of a database error', async () => {
+  it('rejects a cursor that does not decode to a ledger position with 400 INVALID_CURSOR instead of a database error', async () => {
     const wallet = await api.wallet('10.00');
 
     for (const cursor of ['%%%', cursorOf('abc'), cursorOf('0'), cursorOf('-5'), cursorOf('1.5'), cursorOf('9223372036854775808')]) {
       const res = await api.get(ledgerPath(wallet.id, { cursor }));
-      expect({ cursor, status: res.status, failureCode: res.body.failureCode }).toEqual({ cursor, status: 400, failureCode: 'INVALID_PAYLOAD' });
+      expect({ cursor, status: res.status, failureCode: res.body.failureCode }).toEqual({ cursor, status: 400, failureCode: 'INVALID_CURSOR' });
     }
   });
 

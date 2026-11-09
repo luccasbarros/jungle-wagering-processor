@@ -8,7 +8,7 @@ import {
 } from '../../domain/wager-transaction.ts';
 import type { LedgerDirection, WalletLedgerEntry } from '../../domain/wallet-ledger-entry.ts';
 import type { FailureCode } from '../../domain/failure-codes.ts';
-import type { OutboxMessage } from '../../domain/outbox-message.ts';
+import { OutboxMessage } from '../../domain/outbox-message.ts';
 import type { InboxMessage } from '../../domain/inbox-message.ts';
 
 // Records mirror the columns; NUMERIC stays a string end to end and only becomes Money through Money.from.
@@ -269,7 +269,19 @@ export const outboxToRecord = (message: OutboxMessage): OutboxRecord => ({
   publishedAt: message.publishedAt ?? null,
 });
 
-export const inboxToRecord = (message: InboxMessage): InboxRecord => ({
+export const outboxToDomain = (record: OutboxRecord): OutboxMessage =>
+  OutboxMessage.rehydrate({
+    id: record.id,
+    aggregateId: record.aggregateId,
+    eventType: record.eventType,
+    payload: record.payload,
+    occurredAt: record.occurredAt,
+    attempts: record.attempts,
+    nextAttemptAt: record.nextAttemptAt ?? undefined,
+    publishedAt: record.publishedAt ?? undefined,
+  });
+
+export const inboxToRecord =(message: InboxMessage): InboxRecord => ({
   consumerName: message.consumerName,
   messageId: message.messageId,
   payloadHash: message.payloadHash,

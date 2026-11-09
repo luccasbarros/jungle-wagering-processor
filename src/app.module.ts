@@ -17,6 +17,7 @@ import { MikroOrmUnitOfWork } from './infrastructure/persistence/mikro-orm-unit-
 import { createOrm, databaseUrl } from './infrastructure/persistence/orm.ts';
 import { SystemClock, UuidV7IdGenerator } from './infrastructure/system.ts';
 import { pendingReferenceProviders } from './infrastructure/workers/pending-reference-worker.ts';
+import { OUTBOX_PROVIDERS } from './infrastructure/messaging/outbox-publisher.ts';
 
 export interface AppConfig {
   databaseUrl: string;
@@ -55,6 +56,7 @@ export class AppModule {
         ...pendingReferenceProviders(),
         { provide: APP_GUARD, useClass: AuthGuard },
         { provide: APP_FILTER, useClass: HttpErrorFilter },
+        ...OUTBOX_PROVIDERS,
       ],
     };
   }

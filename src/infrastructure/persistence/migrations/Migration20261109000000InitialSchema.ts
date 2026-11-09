@@ -121,6 +121,10 @@ export class Migration20261109000000InitialSchema extends Migration {
     this.addSql(`
       CREATE INDEX ix_outbox_due ON outbox_messages (next_attempt_at, occurred_at)
         WHERE published_at IS NULL`);
+
+    this.addSql(`
+      CREATE INDEX ix_outbox_pending_by_aggregate ON outbox_messages (aggregate_id, occurred_at)
+        WHERE published_at IS NULL`);
   }
 
   override down(): void {

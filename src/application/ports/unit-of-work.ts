@@ -1,3 +1,4 @@
+import type { Money } from '../../domain/money.ts';
 import type { Wallet } from '../../domain/wallet.ts';
 import type { WagerTransaction } from '../../domain/wager-transaction.ts';
 import type { WalletLedgerEntry } from '../../domain/wallet-ledger-entry.ts';
@@ -27,8 +28,25 @@ export interface WagerTransactionRepository {
   lockPendingReferenceById(id: string): Promise<WagerTransaction | undefined>;
 }
 
+/** `seq` is the entry's position in commit order within its wallet: every ledger write holds the wallet lock. */
+export interface LedgerPosition {
+  entry: WalletLedgerEntry;
+  seq: string;
+}
+
+export interface LedgerTotals {
+  storedBalance: Money;
+  credits: Money;
+  debits: Money;
+  entries: number;
+}
+
 export interface LedgerRepository {
   append(entry: WalletLedgerEntry): Promise<void>;
+  /** Newest first; with `beforeSeq`, only entries older than that position. */
+  pageNewestFirst(walletId: string, beforeSeq: string | undefined, limit: number): Promise<LedgerPosition[]>;
+  /** Stored balance and ledger sums from one snapshot, so a write committing in between cannot read as a divergence. */
+  totals(walletId: string): Promise<LedgerTotals | undefined>;
 }
 
 export interface OutboxRepository {

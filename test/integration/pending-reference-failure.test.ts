@@ -21,6 +21,7 @@ class LedgerFaultUnitOfWork extends UnitOfWork {
       work({
         ...r,
         ledger: {
+          ...r.ledger,
           append: async () => {
             throw new Error('planted ledger failure');
           },

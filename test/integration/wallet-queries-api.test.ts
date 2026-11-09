@@ -1,24 +1,30 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it, spyOn } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
 import type { INestApplication } from '@nestjs/common';
 import { createApp } from '../../src/app.module.ts';
-import { Metrics } from '../../src/application/ports/metrics.ts';
-import { RECONCILIATION_DIVERGENCE_TOTAL } from '../../src/application/use-cases/reconcile-wallet.ts';
-import type { InProcessMetrics } from '../../src/infrastructure/in-process-metrics.ts';
 import { createTestDatabase, type TestDatabase } from './support/test-database.ts';
 import { apiClient, BRL, expectMoneyInvariants, wager, type ApiClient, type WalletRef } from './support/test-app.ts';
 
 let db: TestDatabase;
 let app: INestApplication;
 let api: ApiClient;
-let metrics: InProcessMetrics;
+let baseUrl: string;
+const logLines: string[] = [];
 
 beforeAll(async () => {
   db = await createTestDatabase('wallet_queries_api');
-  app = await createApp({ databaseUrl: db.url });
+  app = await createApp({
+    databaseUrl: db.url,
+    observability: { logLevel: 'info', logDestination: { write: (line: string) => void logLines.push(line) } },
+  });
   await app.listen(0);
-  api = apiClient(await app.getUrl());
-  metrics = app.get(Metrics) as InProcessMetrics;
+  baseUrl = await app.getUrl();
+  api = apiClient(baseUrl);
 });
+
+async function divergenceCount(): Promise<number> {
+  const scrape = await (await fetch(`${baseUrl}/metrics`)).text();
+  return Number(scrape.match(/^reconciliation_divergence_total (\d+)$/m)?.[1]);
+}
 
 afterEach(async () => {
   await expectMoneyInvariants(db);
@@ -147,7 +153,7 @@ describe('POST /wallets/:walletId/reconciliation', () => {
     const wallet = await api.wallet('100.00');
     await bet(wallet, '25.00');
     await bet(wallet, '10.00');
-    const divergencesBefore = metrics.count(RECONCILIATION_DIVERGENCE_TOTAL);
+    const divergencesBefore = await divergenceCount();
 
     const res = await reconcile(wallet.id);
 
@@ -160,7 +166,7 @@ describe('POST /wallets/:walletId/reconciliation', () => {
       consistent: true,
       checkedEntries: 3,
     });
-    expect(metrics.count(RECONCILIATION_DIVERGENCE_TOTAL)).toBe(divergencesBefore);
+    expect(await divergenceCount()).toBe(divergencesBefore);
   });
 
   it('reports a wallet opened at zero, which has no ledger entries, as consistent at 0.00', async () => {
@@ -174,39 +180,38 @@ describe('POST /wallets/:walletId/reconciliation', () => {
 
   it('flags a balance edited behind the ledger with consistent:false, the signed difference, a warn log and the divergence counter, and leaves the stored balance as it found it', async () => {
     const wallet = await api.wallet('100.00');
-    await db.sql`UPDATE wallets SET balance = balance + 5.00 WHERE id = ${wallet.id}`;
-    const divergencesBefore = metrics.count(RECONCILIATION_DIVERGENCE_TOTAL);
-    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    await db.sql`UPDATE wallets SET balance = balance + 7.31 WHERE id = ${wallet.id}`;
+    const divergencesBefore = await divergenceCount();
+    const correlationId = crypto.randomUUID();
 
     try {
-      const res = await reconcile(wallet.id, { 'x-correlation-id': 'reconcile-1' });
+      const res = await reconcile(wallet.id, { 'x-correlation-id': correlationId });
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({
         walletId: wallet.id,
-        storedBalance: BRL('105.00'),
+        storedBalance: BRL('107.31'),
         calculatedBalance: BRL('100.00'),
-        difference: BRL('5.00'),
+        difference: BRL('7.31'),
         consistent: false,
         checkedEntries: 1,
       });
-      expect(metrics.count(RECONCILIATION_DIVERGENCE_TOTAL)).toBe(divergencesBefore + 1);
-      expect(warn.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
-        {
+      expect(await divergenceCount()).toBe(divergencesBefore + 1);
+      const warnings = logLines.filter((line) => line.includes(correlationId) && line.includes('"level":"warn"'));
+      expect(warnings.map((line) => JSON.parse(line))).toEqual([
+        expect.objectContaining({
           level: 'warn',
-          msg: 'reconciliation divergence',
-          correlationId: 'reconcile-1',
+          msg: 'reconciliation divergence: stored balance differs from the sum of 1 ledger entries',
+          correlationId,
           walletId: wallet.id,
-          difference: BRL('5.00'),
-          checkedEntries: 1,
-        },
+        }),
       ]);
+      for (const amount of ['107.31', '100.00']) expect(warnings.join('\n')).not.toContain(amount);
 
       const [stored] = await db.sql`SELECT balance::text AS balance, version FROM wallets WHERE id = ${wallet.id}`;
-      expect(stored).toEqual({ balance: '105.00', version: 1 });
+      expect(stored).toEqual({ balance: '107.31', version: 1 });
       expect((await reconcile(wallet.id)).body.consistent).toBe(false);
     } finally {
-      warn.mockRestore();
       await db.sql`UPDATE wallets SET balance = 100.00 WHERE id = ${wallet.id}`;
     }
   });

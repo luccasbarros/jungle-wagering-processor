@@ -147,6 +147,15 @@ export class WagerTransaction {
     if (REVERSAL_KINDS.includes(props.kind) && !props.referenceExternalTransactionId) {
       throw new DomainError(FailureCode.InvalidPayload, `${props.kind} requires referenceExternalTransactionId`);
     }
+    // A reference that can never resolve is refused here, not parked in PENDING_REFERENCE until the TTL.
+    if (props.referenceExternalTransactionId !== undefined) {
+      if (ALLOWED_REFERENCE_KINDS[props.kind].length === 0) {
+        throw new DomainError(FailureCode.InvalidPayload, `${props.kind} does not accept referenceExternalTransactionId`);
+      }
+      if (props.referenceExternalTransactionId === props.externalTransactionId) {
+        throw new DomainError(FailureCode.InvalidPayload, 'a transaction cannot reference itself');
+      }
+    }
     if (props.money.isNegative()) throw new InvalidMoneyError('amount must not be negative');
     if (props.kind !== Kind.Loss && props.money.isZero()) throw new InvalidMoneyError(`${props.kind} amount must be positive`);
     return new WagerTransaction({ ...props, payloadHash: wagerPayloadHash(props), status: Status.Pending, retryAttempts: 0 });

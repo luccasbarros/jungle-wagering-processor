@@ -58,6 +58,9 @@ function wallet(balance = '100.00', overrides: { id?: string; playerId?: string 
   });
 }
 
+// BET is the one kind that refuses a reference outright; the others accept one for the table-driven checks.
+const refIfAllowed = (kind: Kind) => (kind === Kind.Bet ? {} : { referenceExternalTransactionId: 'ref' });
+
 let entrySeq = 0;
 const ctx = (extra: { reference?: WagerTransaction; referenceAlreadyReversed?: boolean } = {}) => {
   entrySeq += 1;
@@ -94,8 +97,28 @@ describe('WagerTransaction', () => {
       }
     });
 
+    it.each([Kind.Refund, Kind.Rollback])('refuses %s that references itself as an invalid payload, instead of waiting out the TTL', (kind) => {
+      try {
+        tx(kind, { externalTransactionId: 'ext-self', referenceExternalTransactionId: 'ext-self' });
+        throw new Error('expected a throw');
+      } catch (error) {
+        expect(error).toBeInstanceOf(DomainError);
+        expect((error as DomainError).code).toBe(FailureCode.InvalidPayload);
+      }
+    });
+
+    it('refuses a BET with a reference as an invalid payload, because no rule gives it a meaning', () => {
+      try {
+        tx(Kind.Bet, { referenceExternalTransactionId: 'ref' });
+        throw new Error('expected a throw');
+      } catch (error) {
+        expect(error).toBeInstanceOf(DomainError);
+        expect((error as DomainError).code).toBe(FailureCode.InvalidPayload);
+      }
+    });
+
     it.each([Kind.Bet, Kind.Win, Kind.Refund, Kind.Rollback])('refuses a zero amount on %s', (kind) => {
-      expect(() => tx(kind, { money: brl('0.00'), referenceExternalTransactionId: 'ref' })).toThrow(InvalidMoneyError);
+      expect(() => tx(kind, { money: brl('0.00'), ...refIfAllowed(kind) })).toThrow(InvalidMoneyError);
     });
 
     it('accepts a zero amount on LOSS because it only records the outcome', () => {
@@ -115,7 +138,7 @@ describe('WagerTransaction', () => {
       [Kind.Refund, true],
       [Kind.Rollback, true],
     ])('%s requires a reference: %p', (kind, expected) => {
-      expect(tx(kind, { referenceExternalTransactionId: 'ref' }).requiresReference()).toBe(expected);
+      expect(tx(kind, refIfAllowed(kind)).requiresReference()).toBe(expected);
     });
 
     it.each([
@@ -125,7 +148,7 @@ describe('WagerTransaction', () => {
       [Kind.Refund, true],
       [Kind.Rollback, true],
     ])('%s affects the balance: %p', (kind, expected) => {
-      expect(tx(kind, { referenceExternalTransactionId: 'ref' }).affectsBalance()).toBe(expected);
+      expect(tx(kind, refIfAllowed(kind)).affectsBalance()).toBe(expected);
     });
 
     it.each([
@@ -133,7 +156,7 @@ describe('WagerTransaction', () => {
       [Kind.Win, LedgerDirection.Credit],
       [Kind.Refund, LedgerDirection.Credit],
     ])('moves %s in the %s direction', (kind, direction) => {
-      expect(tx(kind, { referenceExternalTransactionId: 'ref' }).ledgerDirectionFor(processedRef(Kind.Bet))).toBe(direction);
+      expect(tx(kind, refIfAllowed(kind)).ledgerDirectionFor(processedRef(Kind.Bet))).toBe(direction);
     });
 
     it.each([

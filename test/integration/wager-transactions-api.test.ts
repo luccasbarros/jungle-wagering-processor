@@ -292,12 +292,15 @@ describe('idempotency', () => {
 });
 
 describe('payload validation', () => {
+  const selfReferencing = (body: WagerBody) => ({ ...body, referenceExternalTransactionId: body.externalTransactionId });
   const invalid: [string, (wallet: WalletRef) => WagerBody, string][] = [
     ['an OPENING, which is internal only', (w) => wager(w, { kind: 'OPENING' }), 'KIND_NOT_SUBMITTABLE'],
     ['a kind outside the operation list', (w) => wager(w, { kind: 'BONUS' }), 'INVALID_PAYLOAD'],
     ['an amount with one decimal', (w) => wager(w, { money: { amount: '10.5', currency: 'BRL' } }), 'INVALID_MONEY'],
     ['an amount sent as a JSON number', (w) => wager(w, { money: { amount: 10, currency: 'BRL' } }), 'INVALID_MONEY'],
     ['a REFUND without the reference it reverses', (w) => wager(w, { kind: 'REFUND' }), 'INVALID_PAYLOAD'],
+    ['a ROLLBACK that references itself, which could only resolve after a 24 h wait', (w) => selfReferencing(wager(w, { kind: 'ROLLBACK' })), 'INVALID_PAYLOAD'],
+    ['a BET carrying a reference, which no rule gives a meaning to', (w) => wager(w, { referenceExternalTransactionId: 'ext-1' }), 'INVALID_PAYLOAD'],
     ['a payload without a roundId', (w) => wager(w, { roundId: undefined }), 'INVALID_PAYLOAD'],
     ['a walletId that is not a UUID', (w) => wager(w, { walletId: 'wallet-1' }), 'INVALID_PAYLOAD'],
   ];

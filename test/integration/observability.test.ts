@@ -1,7 +1,10 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
-import type { INestApplication } from '@nestjs/common';
+import { Logger, type INestApplication } from '@nestjs/common';
 import { createApp } from '../../src/app.module.ts';
-import { createLogger } from '../../src/infrastructure/observability/logger.ts';
+import { createLogger, NestPinoLogger } from '../../src/infrastructure/observability/logger.ts';
+import { SqsEventPublisher } from '../../src/infrastructure/messaging/sqs-event-publisher.ts';
+import { createSqsClient } from '../../src/infrastructure/messaging/sqs.ts';
+import { OutboxMessage } from '../../src/domain/outbox-message.ts';
 import { PENDING_REFERENCE_POLL_INTERVAL_ENV } from '../../src/infrastructure/workers/pending-reference-worker.ts';
 import { DEFAULT_PENDING_REFERENCE_POLICY } from '../../src/domain/wager-transaction.ts';
 import { createTestDatabase, type TestDatabase } from './support/test-database.ts';
@@ -173,6 +176,35 @@ describe('pending reference worker', () => {
     expect(moved('retries_total{kind="pending_reference"}')).toBeGreaterThanOrEqual(1);
     expect(moved('pending_reference_exhausted_total{status="REJECTED"}')).toBe(1);
     expect(moved('wager_transactions_total{status="REJECTED"}')).toBe(1);
+  });
+});
+
+describe('outbox publisher', () => {
+  it('logs a failed publish with the correlationId of the request that produced the event, and without its money', async () => {
+    const lines: string[] = [];
+    Logger.overrideLogger(new NestPinoLogger(createLogger({ level: 'info', destination: { write: (line: string) => void lines.push(line) } })));
+    const sqs = createSqsClient('http://127.0.0.1:1');
+    const correlationId = crypto.randomUUID();
+    const walletId = crypto.randomUUID();
+    const transactionId = crypto.randomUUID();
+    const message = OutboxMessage.rehydrate({
+      id: crypto.randomUUID(),
+      aggregateId: walletId,
+      eventType: 'WalletBalanceChanged',
+      payload: { correlationId, data: { transactionId, walletId, money: BRL(BET_AMOUNT), balanceAfter: BRL(BALANCE_AFTER_BET) } },
+      occurredAt: new Date(),
+      attempts: 0,
+    });
+    try {
+      await expect(new SqsEventPublisher(sqs, 'http://127.0.0.1:1/000000000000/unreachable.fifo').publish(message)).rejects.toThrow();
+    } finally {
+      sqs.destroy();
+      Logger.overrideLogger(app.get(NestPinoLogger));
+    }
+
+    const line = lines.find((l) => l.includes('failed to publish'));
+    expect(JSON.parse(line!)).toMatchObject({ level: 'warn', correlationId, walletId, transactionId });
+    for (const amount of [BET_AMOUNT, BALANCE_AFTER_BET]) expect(line).not.toContain(amount);
   });
 });
 

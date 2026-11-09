@@ -16,6 +16,7 @@ import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-o
 import { SqsEventPublisher } from '../../src/infrastructure/messaging/sqs-event-publisher.ts';
 import { createSqsClient, DEFAULT_SQS_ENDPOINT } from '../../src/infrastructure/messaging/sqs.ts';
 import { OUTBOX_POLL_INTERVAL_MS } from '../../src/infrastructure/messaging/outbox-publisher.ts';
+import { PrometheusMetrics } from '../../src/infrastructure/observability/prometheus-metrics.ts';
 import { apiClient, expectMoneyInvariants } from './support/test-app.ts';
 import { createTestDatabase, type TestDatabase } from './support/test-database.ts';
 
@@ -218,6 +219,7 @@ describe('one publisher round against the real queue', () => {
   let uow: UnitOfWork;
   let clock: TestClock;
   let publisher: PublishOutbox;
+  let metrics: PrometheusMetrics;
 
   beforeAll(async () => {
     db = await createTestDatabase('outbox_publisher_round');
@@ -231,7 +233,8 @@ describe('one publisher round against the real queue', () => {
   beforeEach(async () => {
     await db.sql`DELETE FROM outbox_messages`;
     clock = new TestClock();
-    publisher = new PublishOutbox(uow, new SqsEventPublisher(sqs, queueUrl), clock);
+    metrics = new PrometheusMetrics({ outboxLagSeconds: async () => 0, deadLetterDepth: async () => 0 });
+    publisher = new PublishOutbox(uow, new SqsEventPublisher(sqs, queueUrl), clock, metrics);
   });
 
   const enqueue = (events: TestEvent[]) => uow.transaction(({ outbox }) => outbox.enqueue(events));
@@ -308,7 +311,7 @@ describe('one publisher round against the real queue', () => {
     const event = new TestEvent(crypto.randomUUID(), 1);
     await enqueue([event]);
 
-    const dying = new PublishOutbox(new DiesBeforeCommit(), new SqsEventPublisher(sqs, queueUrl), clock);
+    const dying = new PublishOutbox(new DiesBeforeCommit(), new SqsEventPublisher(sqs, queueUrl), clock, metrics);
     await expect(dying.execute()).rejects.toBeInstanceOf(Died);
     expect((await outboxRows(db))[0]!.published_at).toBeNull();
 
@@ -335,11 +338,12 @@ describe('one publisher round against the real queue', () => {
     });
     const flakySqs = createSqsClient(`http://localhost:${proxy.port}`);
     try {
-      const flaky = new PublishOutbox(uow, new SqsEventPublisher(flakySqs, queueUrl), clock);
+      const flaky = new PublishOutbox(uow, new SqsEventPublisher(flakySqs, queueUrl), clock, metrics);
       const event = new TestEvent(crypto.randomUUID(), 1);
       await enqueue([event]);
 
       expect(await flaky.execute()).toEqual({ published: 0, failed: 1 });
+      expect(await metrics.registry.metrics()).toContain('retries_total{kind="outbox_publish"} 1');
       const [afterFailure] = await outboxRows(db);
       expect(afterFailure!.attempts).toBe(1);
       expect(afterFailure!.published_at).toBeNull();

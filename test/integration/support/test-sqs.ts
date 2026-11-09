@@ -7,14 +7,14 @@ import {
   type Message,
   type SQSClient,
 } from '@aws-sdk/client-sqs';
-import { createSqsClient, sqsClientConfigFromEnv, type SqsConfig } from '../../../src/infrastructure/messaging/sqs.ts';
+import { createSqsClient, type SqsConsumerConfig } from '../../../src/infrastructure/messaging/sqs.ts';
 import { MAX_RECEIVE_COUNT, WAGER_TRANSACTION_REQUESTED } from '../../../src/infrastructure/messaging/sqs-consumer.ts';
 import type { WagerBody } from './test-app.ts';
 import { defaultKey } from './test-app.ts';
 
 export interface TestQueues {
   sqs: SQSClient;
-  config: SqsConfig;
+  config: SqsConsumerConfig;
   purge(): Promise<void>;
   /** FIFO send; the group defaults to the wallet so the producer convention (one group per wallet) holds in tests. */
   send(body: string, groupId: string): Promise<void>;
@@ -26,8 +26,7 @@ export interface TestQueues {
 
 // Same shape as the compose queues (FIFO, 30s visibility, redrive after MAX_RECEIVE_COUNT), one pair per test file.
 export async function createTestQueues(name: string): Promise<TestQueues> {
-  const base = sqsClientConfigFromEnv();
-  const sqs = createSqsClient(base);
+  const sqs = createSqsClient();
   const dlq = await sqs.send(new CreateQueueCommand({ QueueName: `test_${name}-dlq.fifo`, Attributes: { FifoQueue: 'true' } }));
   const { Attributes } = await sqs.send(new GetQueueAttributesCommand({ QueueUrl: dlq.QueueUrl, AttributeNames: ['QueueArn'] }));
   const main = await sqs.send(
@@ -41,7 +40,7 @@ export async function createTestQueues(name: string): Promise<TestQueues> {
     }),
   );
   // 1s polls keep each stop() in the suite short; production uses the 20s default.
-  const config: SqsConfig = { ...base, queueUrl: main.QueueUrl!, dlqUrl: dlq.QueueUrl!, waitTimeSeconds: 1 };
+  const config: SqsConsumerConfig = { queueUrl: main.QueueUrl!, dlqUrl: dlq.QueueUrl!, waitTimeSeconds: 1 };
 
   const queues: TestQueues = {
     sqs,

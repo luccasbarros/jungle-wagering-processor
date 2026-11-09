@@ -4,6 +4,7 @@ import { createApp } from '../../src/app.module.ts';
 import { SubmitWagerTransaction } from '../../src/application/use-cases/submit-wager-transaction.ts';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work.ts';
 import { SystemClock, UuidV7IdGenerator } from '../../src/infrastructure/system.ts';
+import { PrometheusMetrics } from '../../src/infrastructure/observability/prometheus-metrics.ts';
 import { CONSUMER_NAME, MAX_RECEIVE_COUNT, SqsConsumer } from '../../src/infrastructure/messaging/sqs-consumer.ts';
 import { expectMoneyInvariants, startTestApps, wager, type TestApps, type WalletRef } from './support/test-app.ts';
 import { createTestQueues, envelope, until, type TestQueues } from './support/test-sqs.ts';
@@ -14,6 +15,7 @@ const TEST_TIMEOUT_MS = 30_000;
 let apps: TestApps;
 let queues: TestQueues;
 let consumer: SqsConsumer;
+let metrics: PrometheusMetrics;
 
 beforeAll(async () => {
   apps = await startTestApps('sqs_consumer');
@@ -24,8 +26,23 @@ beforeEach(async () => {
   await queues.purge();
   const uow = new MikroOrmUnitOfWork(apps.db.orm);
   const clock = new SystemClock();
-  consumer = new SqsConsumer(queues.sqs, new SubmitWagerTransaction(uow, clock, new UuidV7IdGenerator()), uow, clock, queues.config);
+  // Fresh registry per test; the scrape-time gauges are never collected here.
+  metrics = new PrometheusMetrics({ outboxLagSeconds: async () => 0, deadLetterDepth: async () => 0 });
+  consumer = new SqsConsumer(queues.sqs, new SubmitWagerTransaction(uow, clock, new UuidV7IdGenerator(), metrics), uow, clock, metrics, queues.config);
 });
+
+/** Sum of a counter's samples matching `labels`, read from the same registry /metrics would expose. */
+async function counter(name: string, labels: Record<string, string> = {}): Promise<number> {
+  const { values } = await metrics.registry.getSingleMetric(name)!.get();
+  return values
+    .filter((sample) => Object.entries(labels).every(([key, value]) => sample.labels[key] === value))
+    .reduce((sum, sample) => sum + sample.value, 0);
+}
+
+const inboxDuplicates = () => counter('duplicates_detected_total', { detector: 'inbox' });
+const redeliveryRetries = () => counter('retries_total', { kind: 'message_redelivery' });
+const deadLettered = () => counter('dlq_messages_total');
+const decided = (status: string) => counter('wager_transactions_total', { status });
 
 afterEach(async () => {
   await consumer.stop();
@@ -82,8 +99,8 @@ describe('SQS consumer of wager-transactions.fifo', () => {
 
     expect(await debitsOf(wallet.id)).toBe(1);
     expect(await inboxRowsFor(message.messageId as string)).toBe(1);
-    expect(consumer.metrics.duplicatesDetected).toBe(1);
-    expect(consumer.metrics.processedByStatus).toEqual({ PROCESSED: 1 });
+    expect(await inboxDuplicates()).toBe(1);
+    expect(await decided('PROCESSED')).toBe(1);
   }, TEST_TIMEOUT_MS);
 
   it('treats a new messageId carrying an already processed operation as an idempotent replay with a single effect', async () => {
@@ -100,8 +117,8 @@ describe('SQS consumer of wager-transactions.fifo', () => {
     expect(await debitsOf(wallet.id)).toBe(1);
     expect(await inboxRowsFor(first.messageId as string)).toBe(1);
     expect(await inboxRowsFor(second.messageId as string)).toBe(1);
-    expect(consumer.metrics.idempotentReplays).toBe(1);
-    expect(consumer.metrics.duplicatesDetected).toBe(0);
+    expect(await counter('duplicates_detected_total', { detector: 'idempotency_key' })).toBe(1);
+    expect(await inboxDuplicates()).toBe(0);
   }, TEST_TIMEOUT_MS);
 
   it('does not debit again when the worker died after the commit and before the ack', async () => {
@@ -117,12 +134,12 @@ describe('SQS consumer of wager-transactions.fifo', () => {
 
     consumer.start();
     // Queue depth lags a visibility change on LocalStack, so wait for the consumer to see the redelivery first.
-    await until('the redelivery to be recognized by the inbox', async () => consumer.metrics.duplicatesDetected === 1);
+    await until('the redelivery to be recognized by the inbox', async () => (await inboxDuplicates()) === 1);
     await until('the ack', mainQueueDrained);
 
     expect(await debitsOf(wallet.id)).toBe(1);
     expect(await inboxRowsFor(message.messageId as string)).toBe(1);
-    expect(consumer.metrics.processedByStatus).toEqual({ PROCESSED: 1 });
+    expect(await decided('PROCESSED')).toBe(1);
   }, TEST_TIMEOUT_MS);
 
   it('moves a message that is not valid JSON to the DLQ with the reason and consumes it from the main queue', async () => {
@@ -135,7 +152,7 @@ describe('SQS consumer of wager-transactions.fifo', () => {
     expect(dead?.Body).toBe('{not json');
     expect(dead?.MessageAttributes?.failureCode?.StringValue).toBe('INVALID_PAYLOAD');
     expect(dead?.MessageAttributes?.failureReason?.StringValue).toContain('JSON');
-    expect(consumer.metrics.deadLettered).toBe(1);
+    expect(await deadLettered()).toBe(1);
   }, TEST_TIMEOUT_MS);
 
   it('dead-letters an OPENING submission instead of retrying it, persisting nothing', async () => {
@@ -160,14 +177,14 @@ describe('SQS consumer of wager-transactions.fifo', () => {
     await sendEnvelope(wallet, message);
 
     consumer.start();
-    await until('the first delivery to hit lock_timeout', async () => consumer.metrics.retries === 1, 15_000);
+    await until('the first delivery to hit lock_timeout', async () => (await redeliveryRetries()) === 1, 15_000);
     expect(await debitsOf(wallet.id)).toBe(0);
     await lock.release();
 
     await until('the redelivery to be consumed', mainQueueDrained, 15_000);
     expect(await debitsOf(wallet.id)).toBe(1);
     expect(await inboxRowsFor(message.messageId as string)).toBe(1);
-    expect(consumer.metrics.processedByStatus).toEqual({ PROCESSED: 1 });
+    expect(await decided('PROCESSED')).toBe(1);
   }, TEST_TIMEOUT_MS);
 
   it('dead-letters a transient failure on the last delivery the redrive policy allows, with the reason', async () => {
@@ -205,9 +222,10 @@ describe('SQS consumer of wager-transactions.fifo', () => {
 
     expect(await debitsOf(blocked.id)).toBe(1);
     expect(await debitsOf(untouched.id)).toBe(0);
-    expect(consumer.metrics.returnedToQueue).toBe(1);
+    // Receive count 2 = it was in the consumer's batch and is visible again, without waiting out the 30s timeout.
     const [handedBack] = await queues.receive(queues.config.queueUrl);
     expect(JSON.parse(handedBack?.Body ?? '{}').data?.walletId).toBe(untouched.id);
+    expect(handedBack?.Attributes?.ApproximateReceiveCount).toBe('2');
   }, TEST_TIMEOUT_MS);
 
   it('stops as soon as the current poll ends when idle, instead of polling again', async () => {
@@ -218,14 +236,21 @@ describe('SQS consumer of wager-transactions.fifo', () => {
     expect(Date.now() - started).toBeLessThan((queues.config.waitTimeSeconds + 1) * 1000);
   }, TEST_TIMEOUT_MS);
 
-  it('starts polling with the application and stops with it', async () => {
-    const app = await createApp({ databaseUrl: apps.db.url, sqs: queues.config });
+  it('starts polling with the application, logs every line of a message with its ids, and stops with it', async () => {
+    const lines: string[] = [];
+    const observability = { logLevel: 'info', logDestination: { write: (line: string) => void lines.push(line) } };
+    const app = await createApp({ databaseUrl: apps.db.url, observability, sqs: queues.config });
     await app.listen(0);
     try {
       const wallet = await apps.apis[0]!.wallet('100.00');
-      await sendEnvelope(wallet, envelope(wager(wallet)));
+      const message = envelope(wager(wallet));
+      await sendEnvelope(wallet, message);
       await until('the application consumer to process the message', async () => (await debitsOf(wallet.id)) === 1);
       await until('the ack', mainQueueDrained);
+
+      const committed = lines.map((line) => JSON.parse(line)).find((entry) => String(entry.msg).startsWith('message committed'));
+      expect(committed).toMatchObject({ messageId: message.messageId, correlationId: message.messageId, walletId: wallet.id, providerId: 'provider-a', status: 'PROCESSED' });
+      expect(JSON.stringify(committed)).not.toContain('10.00');
     } finally {
       await app.close();
     }

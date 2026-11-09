@@ -91,3 +91,28 @@ describe('a pending transaction whose attempt keeps blowing up', () => {
     expect(exposition).toContain('wager_transactions_total{status="FAILED"} 1');
   });
 });
+
+describe('replaying a FAILED transaction', () => {
+  it('answers 422 with the stored FAILED result and PERMANENT_FAILURE, never a 500 that invites a retry', async () => {
+    const wallet = await api.wallet('100.00');
+    const lateBet = wager(wallet, { money: BRL('10.00') });
+    const rollback = wager(wallet, { kind: 'ROLLBACK', money: lateBet.money, referenceExternalTransactionId: lateBet.externalTransactionId });
+    const pending = await api.submit(rollback);
+    expect(pending.status).toBe(202);
+    expect((await api.submit(lateBet)).status).toBe(200);
+    expect(await worker.runOnce()).toMatchObject({ errors: 1, retried: 1 });
+    await apps.db.sql`UPDATE wager_transactions SET next_retry_at = now() - interval '1 second' WHERE id = ${pending.body.transactionId}`;
+    expect(await worker.runOnce()).toMatchObject({ failed: 1 });
+
+    const replay = await api.submit(rollback);
+
+    expect(replay.status).toBe(422);
+    expect(replay.body).toEqual({
+      transactionId: pending.body.transactionId,
+      status: 'FAILED',
+      failureCode: 'PERMANENT_FAILURE',
+      balance: BRL('100.00'),
+      idempotentReplay: true,
+    });
+  });
+});

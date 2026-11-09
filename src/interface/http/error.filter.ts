@@ -1,7 +1,7 @@
 import { Catch, HttpException, Logger, type ArgumentsHost, type ExceptionFilter } from '@nestjs/common';
 import { DomainError } from '../../domain/errors/domain-errors.ts';
 import { FailureCode } from '../../domain/failure-codes.ts';
-import { TransientFailureError } from '../../application/errors.ts';
+import { TransientFailureError, safeReason, safeStack } from '../../application/errors.ts';
 import { HTTP_STATUS_BY_FAILURE_CODE, RETRY_AFTER_SECONDS, UNMAPPED_DOMAIN_ERROR_STATUS } from './http-contract.ts';
 
 interface HttpError {
@@ -20,7 +20,7 @@ export class HttpErrorFilter implements ExceptionFilter {
 
   catch(error: unknown, host: ArgumentsHost): void {
     const { status, body } = toHttpError(error);
-    if (status === 500) this.logger.error(error instanceof Error ? error.stack : String(error));
+    if (status === 500) this.logger.error(safeReason(error), safeStack(error));
     const response = host.switchToHttp().getResponse<ResponseLike>();
     if (status === 503) response.setHeader('Retry-After', RETRY_AFTER_SECONDS);
     response.status(status).json(body);

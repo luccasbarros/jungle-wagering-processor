@@ -197,6 +197,25 @@ describe('publisher loop inside the Nest app', () => {
     }
   }, 30_000);
 
+  it('drains a burst of events on one wallet in a few rounds instead of one event per poll interval', async () => {
+    const aggregateId = crypto.randomUUID();
+    const events = Array.from({ length: 20 }, (_, n) => new TestEvent(aggregateId, n));
+    const uow = new MikroOrmUnitOfWork(db.orm);
+    await uow.transaction(({ outbox }) => outbox.enqueue(events));
+    const oldCeilingMs = events.length * OUTBOX_POLL_INTERVAL_MS;
+
+    const app = await createApp({ databaseUrl: db.url });
+    const started = Date.now();
+    await app.listen(0);
+    try {
+      expect(await waitUntil(allPublished(db), oldCeilingMs * 2)).toBe(true);
+      expect(Date.now() - started).toBeLessThan(oldCeilingMs / 3);
+      expect((await drain(sqs, queueUrl)).map((m) => m.eventId)).toEqual(events.map((event) => event.eventId));
+    } finally {
+      await app.close();
+    }
+  }, 30_000);
+
   it('stops claiming once the app closes, so a shutdown never leaves a half-published batch behind', async () => {
     const app = await createApp({ databaseUrl: db.url });
     await app.listen(0);

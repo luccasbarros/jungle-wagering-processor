@@ -1,5 +1,6 @@
 import { FailureCode } from '../../domain/failure-codes.ts';
 import { WagerTransactionStatus } from '../../domain/wager-transaction.ts';
+import { InvariantViolationError } from '../../domain/errors/domain-errors.ts';
 
 // One table for every endpoint, so a provider decides retry/fix/give up from the status code alone (plan 4.4).
 export const HTTP_STATUS_BY_FAILURE_CODE: Partial<Record<FailureCode, number>> = {
@@ -18,12 +19,18 @@ export const HTTP_STATUS_BY_FAILURE_CODE: Partial<Record<FailureCode, number>> =
 /** A business refusal that escaped as an error instead of a REJECTED row still reads as a rule violation. */
 export const UNMAPPED_DOMAIN_ERROR_STATUS = 422;
 
-// Pure function of the stored status, so a replay answers exactly what the original did.
-export const HTTP_STATUS_BY_TRANSACTION_STATUS: Partial<Record<WagerTransactionStatus, number>> = {
+// Pure function of the stored status, so a replay answers exactly what the original did; FAILED is terminal like REJECTED and its failureCode says why, so it shares 422 (a 5xx would tell the provider to resend forever).
+export const HTTP_STATUS_BY_TRANSACTION_STATUS: Record<Exclude<WagerTransactionStatus, WagerTransactionStatus.Pending>, number> = {
   [WagerTransactionStatus.Processed]: 200,
   [WagerTransactionStatus.Rejected]: 422,
+  [WagerTransactionStatus.Failed]: 422,
   [WagerTransactionStatus.PendingReference]: 202,
 };
+
+export function httpStatusFor(status: WagerTransactionStatus): number {
+  if (status === WagerTransactionStatus.Pending) throw new InvariantViolationError('a PENDING transaction never leaves the use case');
+  return HTTP_STATUS_BY_TRANSACTION_STATUS[status];
+}
 
 export const RETRY_AFTER_SECONDS = '1';
 

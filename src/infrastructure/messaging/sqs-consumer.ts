@@ -12,7 +12,7 @@ import { sha256Hex } from '../../domain/payload-hash.ts';
 import { FailureCode } from '../../domain/failure-codes.ts';
 import { DomainError } from '../../domain/errors/domain-errors.ts';
 import { parseIdempotencyKey, parseWagerPayload } from '../../application/input.ts';
-import { DuplicateInboxMessageError, TransientFailureError } from '../../application/errors.ts';
+import { DuplicateInboxMessageError, TransientFailureError, safeReason } from '../../application/errors.ts';
 import { logContext } from '../../application/log-context.ts';
 import type { Clock } from '../../application/ports/clock.ts';
 import type { Metrics } from '../../application/ports/metrics.ts';
@@ -111,7 +111,7 @@ export class SqsConsumer {
           await this.processAndAck(message);
         } catch (error) {
           // SQS itself failed (visibility, DLQ send or ack): the message comes back after its visibility timeout.
-          this.logger.error(`broker call failed for message ${message.MessageId}: ${String(error)}`);
+          this.logger.error(`broker call failed for message ${message.MessageId}: ${safeReason(error)}`);
         }
       }
     }
@@ -166,9 +166,9 @@ export class SqsConsumer {
       if (error instanceof DomainError) return this.deadLetter(message, error.code, error.message);
       if (receiveCount >= MAX_RECEIVE_COUNT) {
         const code = error instanceof TransientFailureError ? FailureCode.TransientFailure : FailureCode.PermanentFailure;
-        return this.deadLetter(message, code, `gave up after ${receiveCount} deliveries: ${String(error)}`);
+        return this.deadLetter(message, code, `gave up after ${receiveCount} deliveries: ${safeReason(error)}`);
       }
-      if (!(error instanceof TransientFailureError)) this.logger.error(`unexpected error, will retry: ${String(error)}`);
+      if (!(error instanceof TransientFailureError)) this.logger.error(`unexpected error, will retry: ${safeReason(error)}`);
       return this.retryLater(message, receiveCount);
     }
   }
@@ -243,7 +243,7 @@ export class SqsConsumer {
       return Messages ?? [];
     } catch (error) {
       if (this.stopping) return [];
-      this.logger.error(`receive failed: ${String(error)}`);
+      this.logger.error(`receive failed: ${safeReason(error)}`);
       await Bun.sleep(RECEIVE_ERROR_PAUSE_MS);
       return [];
     }

@@ -22,10 +22,14 @@ import { NestPinoLogger } from './infrastructure/observability/logger.ts';
 import { Metrics } from './application/ports/metrics.ts';
 import { ObservabilityModule, type ObservabilityConfig } from './infrastructure/observability/observability.module.ts';
 import { QueriesModule } from './queries.module.ts';
+import { sqsConsumerConfigFromEnv, type SqsConsumerConfig } from './infrastructure/messaging/sqs.ts';
+import { sqsConsumerProviders } from './infrastructure/messaging/sqs-consumer.providers.ts';
 
 export interface AppConfig {
   databaseUrl: string;
   observability?: ObservabilityConfig;
+  /** Absent means no queue consumer in this process. */
+  sqs?: SqsConsumerConfig;
 }
 
 class OrmShutdown {
@@ -71,12 +75,13 @@ export class AppModule {
         { provide: APP_GUARD, useClass: AuthGuard },
         { provide: APP_FILTER, useClass: HttpErrorFilter },
         ...OUTBOX_PROVIDERS,
+        ...sqsConsumerProviders(config.sqs),
       ],
     };
   }
 }
 
-export async function createApp(config: AppConfig = { databaseUrl: databaseUrl() }): Promise<INestApplication> {
+export async function createApp(config: AppConfig = { databaseUrl: databaseUrl(), sqs: sqsConsumerConfigFromEnv() }): Promise<INestApplication> {
   const app = await NestFactory.create(AppModule.register(config), { bufferLogs: true });
   app.useLogger(app.get(NestPinoLogger));
   app.enableShutdownHooks();

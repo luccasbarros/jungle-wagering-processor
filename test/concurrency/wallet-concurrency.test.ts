@@ -38,12 +38,34 @@ async function walletState(walletId: string) {
 
 const statusesOf = (responses: ApiResponse[]) => responses.map((res) => res.status).sort();
 
+/** Runs `requests` while a FOR SHARE lock on the wallet stalls every write lock and UPDATE, and lets go once `blocked` of them wait on it. */
+async function underSharedWalletLock<T>(walletId: string, blocked: number, requests: () => Promise<T>): Promise<T> {
+  const holder = await apps.db.sql.reserve();
+  try {
+    await holder`BEGIN`;
+    await holder`SELECT id FROM wallets WHERE id = ${walletId} FOR SHARE`;
+    const pending = requests();
+    for (let waiting = 0; waiting < blocked; await Bun.sleep(10)) {
+      const [row] = await apps.db.sql`
+        SELECT count(*)::int AS waiting FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`;
+      waiting = row.waiting;
+    }
+    await holder`COMMIT`;
+    return await pending;
+  } finally {
+    holder.release();
+  }
+}
+
 describe('two bets racing for the same balance', () => {
+  // The shared lock forces the worst interleaving: both requests are inside their SQL transaction before either can write.
   it('processes exactly one of two concurrent 80.00 bets on 100.00, rejects the other, and leaves 20.00 with one debit', async () => {
     const wallet = await instance(0).wallet('100.00');
     const bets = [wager(wallet, { money: BRL('80.00') }), wager(wallet, { money: BRL('80.00') })];
 
-    const responses = await Promise.all(bets.map((bet, i) => instance(i).submit(bet)));
+    const responses = await underSharedWalletLock(wallet.id, bets.length, () =>
+      Promise.all(bets.map((bet, i) => instance(i).submit(bet))),
+    );
 
     expect(statusesOf(responses)).toEqual([200, 422]);
     const rejected = responses.find((res) => res.status === 422)!;

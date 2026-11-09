@@ -70,6 +70,12 @@ async function insertInboxMessage(overrides: Record<string, unknown> = {}) {
   return row;
 }
 
+async function insertOutboxMessage(overrides: Record<string, unknown> = {}) {
+  const row = { id: id(), aggregate_id: id(), event_type: 'WalletBalanceChanged', payload: { eventId: id() }, occurred_at: NOW, ...overrides };
+  await db.sql`INSERT INTO outbox_messages ${db.sql(row)}`;
+  return row;
+}
+
 const violates = (constraint: string) => expect.objectContaining({ constraint });
 
 // Bun.SQL queries are lazy thenables; expect().rejects only runs a real Promise.
@@ -94,6 +100,10 @@ describe('wallets table', () => {
 
   it('rejects a version below 1, the value a freshly opened wallet starts at', async () => {
     await expect(insertWallet({ version: 0 })).rejects.toEqual(violates('ck_wallets_version_positive'));
+  });
+
+  it('rejects a currency that is not three uppercase letters', async () => {
+    await expect(insertWallet({ currency: 'brl' })).rejects.toEqual(violates('ck_wallets_currency_format'));
   });
 });
 
@@ -132,6 +142,28 @@ describe('wager_transactions table', () => {
     await expect(insertTransaction(wallet.id, { amount: '-1.00' })).rejects.toEqual(violates('ck_wager_transactions_amount_non_negative'));
   });
 
+  it('rejects a currency that is not three uppercase letters', async () => {
+    const wallet = await insertWallet();
+    await expect(insertTransaction(wallet.id, { currency: 'BR' })).rejects.toEqual(violates('ck_wager_transactions_currency_format'));
+  });
+
+  it('rejects a rejected transaction without a failure code, so every refusal tells the provider why', async () => {
+    const wallet = await insertWallet();
+    await expect(insertTransaction(wallet.id, { status: 'REJECTED' })).rejects.toEqual(violates('ck_wager_transactions_failure_code_matches_status'));
+  });
+
+  it('rejects a failure code on a transaction that did not fail', async () => {
+    const wallet = await insertWallet();
+    const processed = insertTransaction(wallet.id, { status: 'PROCESSED', failure_code: 'INSUFFICIENT_FUNDS' });
+    await expect(processed).rejects.toEqual(violates('ck_wager_transactions_failure_code_matches_status'));
+  });
+
+  it('rejects a negative count of pending-reference retry attempts', async () => {
+    const wallet = await insertWallet();
+    const pending = insertTransaction(wallet.id, { kind: 'ROLLBACK', status: 'PENDING_REFERENCE', reference_external_transaction_id: 'missing', retry_attempts: -1 });
+    await expect(pending).rejects.toEqual(violates('ck_wager_transactions_retry_attempts_non_negative'));
+  });
+
   describe('reversal of a reference', () => {
     async function processedBetWithRefund() {
       const wallet = await insertWallet();
@@ -165,6 +197,24 @@ describe('wallet_ledger_entries table', () => {
   it('rejects a DELETE of an existing entry, because the ledger is append-only', async () => {
     const entry = await insertLedgerEntry();
     await expect(run(db.sql`DELETE FROM wallet_ledger_entries WHERE id = ${entry.id}`)).rejects.toMatchObject(LEDGER_APPEND_ONLY);
+  });
+
+  it('rejects a TRUNCATE of the ledger, which row triggers do not see', async () => {
+    await insertLedgerEntry();
+    await expect(run(db.sql`TRUNCATE wallet_ledger_entries`)).rejects.toMatchObject(LEDGER_APPEND_ONLY);
+  });
+
+  it('rejects an entry on a wallet other than the one its transaction belongs to', async () => {
+    const otherWallet = await insertWallet();
+    await expect(insertLedgerEntry({ wallet_id: otherWallet.id })).rejects.toEqual(violates('fk_ledger_transaction_wallet_currency'));
+  });
+
+  it('rejects an entry in a currency other than its transaction currency', async () => {
+    await expect(insertLedgerEntry({ currency: 'USD' })).rejects.toEqual(violates('fk_ledger_transaction_wallet_currency'));
+  });
+
+  it('rejects a currency that is not three uppercase letters', async () => {
+    await expect(insertLedgerEntry({ currency: 'brl' })).rejects.toEqual(violates('ck_ledger_currency_format'));
   });
 
   it('rejects a second entry for the same transaction and wallet, so one operation moves the balance once', async () => {
@@ -206,5 +256,11 @@ describe('inbox_messages table', () => {
   it('accepts the same message id for a different consumer', async () => {
     const message = await insertInboxMessage();
     await expect(insertInboxMessage({ message_id: message.message_id, consumer_name: 'other-consumer' })).resolves.toBeDefined();
+  });
+});
+
+describe('outbox_messages table', () => {
+  it('rejects a negative count of publish attempts', async () => {
+    await expect(insertOutboxMessage({ attempts: -1 })).rejects.toEqual(violates('ck_outbox_attempts_non_negative'));
   });
 });

@@ -158,6 +158,18 @@ describe('wager_transactions table', () => {
     await expect(processed).rejects.toEqual(violates('ck_wager_transactions_failure_code_matches_status'));
   });
 
+  it('rejects an observed balance stored without the currency it was observed in', async () => {
+    const wallet = await insertWallet();
+    const unlabeled = insertTransaction(wallet.id, { observed_balance: '100.00' });
+    await expect(unlabeled).rejects.toEqual(violates('ck_wager_transactions_observed_balance_has_currency'));
+  });
+
+  it('rejects an observed balance currency that is not three uppercase letters', async () => {
+    const wallet = await insertWallet();
+    const lowercase = insertTransaction(wallet.id, { observed_balance: '100.00', observed_balance_currency: 'brl' });
+    await expect(lowercase).rejects.toEqual(violates('ck_wager_transactions_observed_balance_currency_format'));
+  });
+
   it('rejects a negative count of pending-reference retry attempts', async () => {
     const wallet = await insertWallet();
     const pending = insertTransaction(wallet.id, { kind: 'ROLLBACK', status: 'PENDING_REFERENCE', reference_external_transaction_id: 'missing', retry_attempts: -1 });

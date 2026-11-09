@@ -35,6 +35,8 @@ export class Migration20261109000000InitialSchema extends Migration {
         reference_transaction_id UUID CONSTRAINT fk_wager_transactions_reference REFERENCES wager_transactions (id),
         failure_code TEXT,
         observed_balance NUMERIC(19,2),
+        observed_balance_currency CHAR(3) CONSTRAINT ck_wager_transactions_observed_balance_currency_format
+          CHECK (observed_balance_currency ~ '^[A-Z]{3}$'),
         retry_attempts INTEGER NOT NULL DEFAULT 0 CONSTRAINT ck_wager_transactions_retry_attempts_non_negative CHECK (retry_attempts >= 0),
         next_retry_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ NOT NULL,
@@ -44,7 +46,9 @@ export class Migration20261109000000InitialSchema extends Migration {
         CONSTRAINT ck_wager_transactions_reversal_has_reference
           CHECK (kind NOT IN ('REFUND', 'ROLLBACK') OR reference_external_transaction_id IS NOT NULL),
         CONSTRAINT ck_wager_transactions_failure_code_matches_status
-          CHECK ((status IN ('REJECTED', 'FAILED')) = (failure_code IS NOT NULL))
+          CHECK ((status IN ('REJECTED', 'FAILED')) = (failure_code IS NOT NULL)),
+        CONSTRAINT ck_wager_transactions_observed_balance_has_currency
+          CHECK ((observed_balance IS NULL) = (observed_balance_currency IS NULL))
       )`);
 
     // Any kind counts: a REFUND plus a ROLLBACK of the same BET would credit it twice.
